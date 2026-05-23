@@ -14,7 +14,6 @@ kotlin {
 
     jvm("desktop") {
         jvmToolchain(17)
-        withJava()
     }
 
     sourceSets {
