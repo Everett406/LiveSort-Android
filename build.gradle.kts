@@ -1,12 +1,6 @@
 plugins {
     // Root project does not apply plugins directly
-    // Plugins are applied in subprojects
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
-    }
-}
+// Note: repositories are managed in settings.gradle.kts via dependencyResolutionManagement
+// Do not declare repositories here to avoid conflicts with settings-managed repositories
