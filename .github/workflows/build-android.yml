@@ -2,12 +2,12 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, master, develop]
     paths-ignore:
       - '**.md'
       - '**.txt'
   pull_request:
-    branches: [main, develop]
+    branches: [main, master, develop]
   workflow_dispatch:
 
 jobs:
@@ -45,17 +45,8 @@ jobs:
       - name: Build Debug APK
         run: ./gradlew :androidApp:assembleDebug --no-daemon
 
-      - name: Build Release APK
-        run: ./gradlew :androidApp:assembleRelease --no-daemon
-
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
           name: livesort-android-debug
           path: androidApp/build/outputs/apk/debug/*.apk
-
-      - name: Upload Release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: livesort-android-release
-          path: androidApp/build/outputs/apk/release/*.apk

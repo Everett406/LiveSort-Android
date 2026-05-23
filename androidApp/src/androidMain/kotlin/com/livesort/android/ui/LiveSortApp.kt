@@ -3,9 +3,18 @@ package com.livesort.android.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -20,11 +29,11 @@ import com.livesort.android.player.CrossfadePlayer
 import com.livesort.android.scanner.AudioFolder
 import com.livesort.android.scanner.AudioScanner
 import com.livesort.android.ui.components.PlayerBar
+import com.livesort.android.ui.screens.AlgorithmScreen
 import com.livesort.android.ui.screens.FileSelectScreen
 import com.livesort.android.ui.screens.FolderPickerScreen
 import com.livesort.android.ui.screens.HomeScreen
 import com.livesort.shared.audio.AudioAnalyzer
-import com.livesort.shared.model.Song
 import com.livesort.shared.viewmodel.PlaylistViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -34,8 +43,10 @@ sealed class Screen {
     data object Home : Screen()
     data object FolderPicker : Screen()
     data class FileSelect(val folder: AudioFolder) : Screen()
+    data object Algorithm : Screen()
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LiveSortApp() {
     val context = LocalContext.current
@@ -45,7 +56,6 @@ fun LiveSortApp() {
     val viewModel = remember { PlaylistViewModel(AudioAnalyzer()) }
     val player = remember { CrossfadePlayer(context) }
 
-    // Auto-sync playlist to player when sorted or playing index changes
     val sortedSongs by viewModel.sortedSongs.collectAsState()
     val currentPlayingIndex by viewModel.currentPlayingIndex.collectAsState()
 
@@ -56,6 +66,43 @@ fun LiveSortApp() {
     }
 
     Scaffold(
+        topBar = {
+            when (currentScreen) {
+                is Screen.Home -> {
+                    TopAppBar(
+                        title = { Text("LiveSort") },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        ),
+                        actions = {
+                            IconButton(onClick = { currentScreen = Screen.Algorithm }) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "算法说明"
+                                )
+                            }
+                        }
+                    )
+                }
+                is Screen.Algorithm -> {
+                    TopAppBar(
+                        title = { Text("算法说明") },
+                        navigationIcon = {
+                            IconButton(onClick = { currentScreen = Screen.Home }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "返回"
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        )
+                    )
+                }
+                else -> {}
+            }
+        },
         bottomBar = {
             if (currentScreen == Screen.Home) {
                 PlayerBar(player = player)
@@ -100,6 +147,10 @@ fun LiveSortApp() {
                                 }
                             }
                         )
+                    }
+
+                    is Screen.Algorithm -> {
+                        AlgorithmScreen()
                     }
                 }
             }

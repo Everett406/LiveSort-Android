@@ -16,8 +16,8 @@ android {
         applicationId = "com.livesort.android"
         minSdk = (findProperty("android.minSdk") as String).toInt()
         targetSdk = (findProperty("android.targetSdk") as String).toInt()
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionName = System.getenv("RELEASE_TAG") ?: "1.0.0-dev"
     }
 
     buildTypes {
