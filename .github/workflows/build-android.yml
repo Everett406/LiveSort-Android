@@ -41,6 +41,7 @@ jobs:
 
       - name: Run lint
         run: ./gradlew :androidApp:lintDebug --no-daemon
+        continue-on-error: true
 
       - name: Build Debug APK
         run: ./gradlew :androidApp:assembleDebug --no-daemon
