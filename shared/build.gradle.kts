@@ -34,14 +34,14 @@ kotlin {
                 implementation("androidx.appcompat:appcompat:1.6.1")
                 implementation("androidx.core:core-ktx:1.12.0")
                 // TarsosDSP core for FFT algorithms (platform-agnostic)
-                implementation("be.tarsos.dsp:core:2.4")
+                implementation("be.tarsos.dsp:core:2.5")
             }
         }
 
         val desktopMain by getting {
             dependencies {
                 // TarsosDSP for audio analysis on Desktop
-                implementation("be.tarsos.dsp:core:2.4")
+                implementation("be.tarsos.dsp:core:2.5")
                 implementation("be.tarsos.dsp:jvm:2.4")
             }
         }
