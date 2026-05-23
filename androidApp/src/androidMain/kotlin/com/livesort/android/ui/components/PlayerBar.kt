@@ -38,9 +38,19 @@ import com.livesort.android.player.CrossfadePlayer
 
 @Composable
 fun PlayerBar(
-    player: CrossfadePlayer,
+    player: CrossfadePlayer?,
     modifier: Modifier = Modifier
 ) {
+    if (player == null) {
+        // Placeholder when player hasn't been initialized yet
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .height(8.dp)
+        )
+        return
+    }
+
     val isPlaying by player.isPlaying.collectAsState()
     val currentSong by player.currentSong.collectAsState()
     val progress by player.progress.collectAsState()
@@ -60,6 +70,7 @@ fun PlayerBar(
                         MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
                         MaterialTheme.colorScheme.surface
                     )
+                )
             )
             .padding(horizontal = 20.dp, vertical = 12.dp)
     ) {
@@ -146,7 +157,7 @@ fun PlayerBar(
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                     contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = Color.White,
+                    tint = androidx.compose.ui.graphics.Color.White,
                     modifier = Modifier.size(28.dp)
                 )
             }

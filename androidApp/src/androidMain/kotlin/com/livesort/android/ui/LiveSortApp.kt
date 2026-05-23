@@ -16,6 +16,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -54,14 +55,25 @@ fun LiveSortApp() {
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
 
     val viewModel = remember { PlaylistViewModel(AudioAnalyzer()) }
-    val player = remember { CrossfadePlayer(context) }
+    var player by remember { mutableStateOf<CrossfadePlayer?>(null) }
 
     val sortedSongs by viewModel.sortedSongs.collectAsState()
     val currentPlayingIndex by viewModel.currentPlayingIndex.collectAsState()
 
+    // Lazy initialization: only create ExoPlayer when user actually has songs to play
     LaunchedEffect(sortedSongs, currentPlayingIndex) {
         if (sortedSongs.isNotEmpty() && currentPlayingIndex >= 0) {
-            player.setPlaylist(sortedSongs, currentPlayingIndex)
+            if (player == null) {
+                player = CrossfadePlayer(context)
+            }
+            player?.setPlaylist(sortedSongs, currentPlayingIndex)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            player?.release()
+            player = null
         }
     }
 
