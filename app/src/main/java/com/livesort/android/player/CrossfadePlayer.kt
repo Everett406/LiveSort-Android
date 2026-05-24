@@ -6,6 +6,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.livesort.android.model.Song
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -109,7 +110,7 @@ class CrossfadePlayer(context: Context) {
         nextPlayer.clearMediaItems()
 
         // 加载当前歌曲
-        val uri = Uri.parse(song.filename)
+        val uri = resolveUri(song.filename)
         currentPlayer.setMediaItem(MediaItem.fromUri(uri))
         currentPlayer.prepare()
         currentPlayer.play()
@@ -185,7 +186,7 @@ class CrossfadePlayer(context: Context) {
         _isTransitioning.value = true
 
         // 准备下一首
-        val uri = Uri.parse(nextSong.filename)
+        val uri = resolveUri(nextSong.filename)
         nextPlayer.setMediaItem(MediaItem.fromUri(uri))
         nextPlayer.volume = 0f
         nextPlayer.prepare()
@@ -218,6 +219,14 @@ class CrossfadePlayer(context: Context) {
 
             // 继续追踪新 currentPlayer 的进度
             startProgressTracking()
+        }
+    }
+
+    private fun resolveUri(path: String): Uri {
+        return when {
+            path.startsWith("content://") || path.startsWith("file://") -> Uri.parse(path)
+            File(path).exists() -> Uri.fromFile(File(path))
+            else -> Uri.parse(path)
         }
     }
 
