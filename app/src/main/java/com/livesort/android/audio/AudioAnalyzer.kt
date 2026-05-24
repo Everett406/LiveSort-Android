@@ -189,13 +189,14 @@ class AudioAnalyzer(private val context: Context) {
         }
 
         val bufferInfo = MediaCodec.BufferInfo()
-        val samples = mutableListOf<Float>()
         var isEOS = false
         // Cap at 5 minutes of audio to prevent memory issues
-        val maxSamples = min((originalSampleRate * maxDurationSec).toLong(), originalSampleRate * 300L)
+        val maxSamples = min((originalSampleRate * maxDurationSec).toLong(), originalSampleRate * 300L).toInt()
+        val samples = FloatArray(maxSamples)
+        var writeIndex = 0
 
         try {
-            while (!isEOS && samples.size < maxSamples) {
+            while (!isEOS && writeIndex < maxSamples) {
                 if (!isEOS) {
                     val inputBufferId = codec.dequeueInputBuffer(10000)
                     if (inputBufferId >= 0) {
@@ -225,11 +226,15 @@ class AudioAnalyzer(private val context: Context) {
                     outputBufferId >= 0 -> {
                         val outputBuffer = codec.getOutputBuffer(outputBufferId)
                         if (outputBuffer == null) {
-                            android.util.Log.w("AudioAnalyzer", "outputBuffer is null")
+                            codec.releaseOutputBuffer(outputBufferId, false)
                             continue
                         }
                         val pcmData = decodeOutputBuffer(outputBuffer, bufferInfo, channelCount)
-                        samples.addAll(pcmData)
+                        val toWrite = min(pcmData.size, maxSamples - writeIndex)
+                        if (toWrite > 0) {
+                            pcmData.copyInto(samples, writeIndex, 0, toWrite)
+                            writeIndex += toWrite
+                        }
                         codec.releaseOutputBuffer(outputBufferId, false)
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             isEOS = true
@@ -251,34 +256,30 @@ class AudioAnalyzer(private val context: Context) {
             try { extractor.release() } catch (_: Exception) {}
         }
 
-        return Pair(originalSampleRate, samples.toFloatArray())
+        return Pair(originalSampleRate, samples.copyOf(writeIndex))
     }
 
-    private fun decodeOutputBuffer(buffer: ByteBuffer, info: MediaCodec.BufferInfo, channelCount: Int): List<Float> {
-        if (channelCount <= 0 || info.size <= 0) return emptyList()
+    private fun decodeOutputBuffer(buffer: ByteBuffer, info: MediaCodec.BufferInfo, channelCount: Int): FloatArray {
+        if (channelCount <= 0 || info.size <= 0) return FloatArray(0)
         buffer.position(info.offset)
         buffer.limit(info.offset + info.size)
 
-        val samples = mutableListOf<Float>()
         val shortBuffer = buffer.asShortBuffer()
         val numShorts = shortBuffer.remaining()
-        if (numShorts <= 0) return emptyList()
+        if (numShorts <= 0) return FloatArray(0)
 
-        if (channelCount == 1) {
-            for (i in 0 until numShorts) {
-                samples.add(shortBuffer.get(i) / 32768f)
-            }
+        return if (channelCount == 1) {
+            FloatArray(numShorts) { i -> shortBuffer.get(i) / 32768f }
         } else {
             val frames = numShorts / channelCount
-            for (i in 0 until frames) {
+            FloatArray(frames) { i ->
                 var sum = 0f
                 for (ch in 0 until channelCount) {
                     sum += shortBuffer.get(i * channelCount + ch) / 32768f
                 }
-                samples.add(sum / channelCount)
+                sum / channelCount
             }
         }
-        return samples
     }
 
     private fun resample(samples: FloatArray, fromRate: Int, toRate: Int): FloatArray {
@@ -295,7 +296,7 @@ class AudioAnalyzer(private val context: Context) {
 
     // --- Feature Extraction ---
 
-    private fun estimateBpm(samples: List<Float>, sr: Int): Double {
+    private fun estimateBpm(samples: FloatArray, sr: Int): Double {
         if (samples.size < sr * 5) return 0.0
 
         val envelope = computeEnvelope(samples, sr)
@@ -322,7 +323,7 @@ class AudioAnalyzer(private val context: Context) {
         return bpm.coerceIn(55.0, 210.0)
     }
 
-    private fun computeEnvelope(samples: List<Float>, sr: Int): FloatArray {
+    private fun computeEnvelope(samples: FloatArray, sr: Int): FloatArray {
         val frameSize = sr / 20
         val numFrames = samples.size / frameSize
         val envelope = FloatArray(numFrames)
@@ -345,7 +346,7 @@ class AudioAnalyzer(private val context: Context) {
         return diff
     }
 
-    private fun computeRmsEnergy(samples: List<Float>): Double {
+    private fun computeRmsEnergy(samples: FloatArray): Double {
         if (samples.isEmpty()) return 0.0
         var sum = 0.0
         for (s in samples) {
@@ -354,7 +355,7 @@ class AudioAnalyzer(private val context: Context) {
         return sqrt(sum / samples.size)
     }
 
-    private fun computeSpectralCentroid(samples: List<Float>, sr: Int): Double {
+    private fun computeSpectralCentroid(samples: FloatArray, sr: Int): Double {
         if (samples.isEmpty()) return 0.0
         val fftSize = 2048
         val fft = FFT(fftSize)
@@ -382,7 +383,7 @@ class AudioAnalyzer(private val context: Context) {
         return if (magnitudeSum > 0) weightedSum / magnitudeSum else 0.0
     }
 
-    private fun estimateInvalidTailSec(samples: List<Float>, sr: Int): Double {
+    private fun estimateInvalidTailSec(samples: FloatArray, sr: Int): Double {
         if (samples.isEmpty()) return 0.0
 
         val frameSize = sr / 20
