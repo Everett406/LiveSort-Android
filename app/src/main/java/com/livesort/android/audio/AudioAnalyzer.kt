@@ -37,6 +37,10 @@ class AudioAnalyzer(private val context: Context) {
 
         try {
             val durationSec = getDuration(uri, filePath)
+            if (durationSec <= 0) {
+                Log.w("AudioAnalyzer", "duration <= 0, skip: $filePath")
+                return@withContext null
+            }
             val (origSampleRate, fullSamples) = decodeAudio(uri, filePath, durationSec)
             if (fullSamples.isEmpty()) return@withContext null
 
@@ -103,8 +107,8 @@ class AudioAnalyzer(private val context: Context) {
                 mixEntrySec = mixEntrySec,
                 mixEffectStartSec = mixEffectStartSec
             )
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (e: Throwable) {
+            Log.e("AudioAnalyzer", "analyze crashed for $filePath", e)
             null
         }
     }
@@ -129,6 +133,8 @@ class AudioAnalyzer(private val context: Context) {
     }
 
     private fun decodeAudio(uri: Uri, filePath: String, maxDurationSec: Double): Pair<Int, FloatArray> {
+        if (maxDurationSec <= 0) return Pair(0, FloatArray(0))
+
         val extractor = MediaExtractor()
         try {
             if (uri.scheme == "content") {
@@ -137,7 +143,8 @@ class AudioAnalyzer(private val context: Context) {
                 extractor.setDataSource(filePath)
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("AudioAnalyzer", "setDataSource failed: $filePath", e)
+            try { extractor.release() } catch (_: Exception) {}
             return Pair(0, FloatArray(0))
         }
 
@@ -152,15 +159,16 @@ class AudioAnalyzer(private val context: Context) {
         }
 
         if (audioTrackIndex < 0) {
-            extractor.release()
+            try { extractor.release() } catch (_: Exception) {}
             return Pair(0, FloatArray(0))
         }
 
         extractor.selectTrack(audioTrackIndex)
-        val format = extractor.getTrackFormat(audioTrackIndex)
+        var format = extractor.getTrackFormat(audioTrackIndex)
         val mime = format.getString(MediaFormat.KEY_MIME) ?: "audio/mpeg"
-        val originalSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE, 44100)
-        val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
+        var originalSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE, 44100)
+        var channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
+        if (channelCount <= 0) channelCount = 2
 
         val codec = try {
             MediaCodec.createDecoderByType(mime)
@@ -228,12 +236,15 @@ class AudioAnalyzer(private val context: Context) {
                         }
                     }
                     outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        // format changed, safe to ignore
+                        format = codec.outputFormat
+                        channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
+                        originalSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE, 44100)
+                        if (channelCount <= 0) channelCount = 2
                     }
                 }
             }
-        } catch (e: Exception) {
-            android.util.Log.e("AudioAnalyzer", "decode loop crashed", e)
+        } catch (e: Throwable) {
+            Log.e("AudioAnalyzer", "decode loop crashed", e)
         } finally {
             try { codec.stop() } catch (_: Exception) {}
             try { codec.release() } catch (_: Exception) {}
@@ -244,12 +255,14 @@ class AudioAnalyzer(private val context: Context) {
     }
 
     private fun decodeOutputBuffer(buffer: ByteBuffer, info: MediaCodec.BufferInfo, channelCount: Int): List<Float> {
+        if (channelCount <= 0 || info.size <= 0) return emptyList()
         buffer.position(info.offset)
         buffer.limit(info.offset + info.size)
 
         val samples = mutableListOf<Float>()
         val shortBuffer = buffer.asShortBuffer()
         val numShorts = shortBuffer.remaining()
+        if (numShorts <= 0) return emptyList()
 
         if (channelCount == 1) {
             for (i in 0 until numShorts) {

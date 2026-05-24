@@ -103,8 +103,8 @@ class PlaylistViewModel(
                     withContext(Dispatchers.Default) {
                         audioAnalyzer.analyze(song.filename)
                     }
-                } catch (e: Exception) {
-                    android.util.Log.e("PlaylistViewModel", "分析崩溃: ${song.title}", e)
+                } catch (e: Throwable) {
+                    Log.e("PlaylistViewModel", "分析崩溃: ${song.title}", e)
                     failedCount++
                     null
                 }
@@ -186,6 +186,10 @@ class PlaylistViewModel(
 
     fun consumeError() {
         _errorMessage.value = null
+    }
+
+    fun postError(message: String) {
+        _errorMessage.value = message
     }
 
     fun dispose() {

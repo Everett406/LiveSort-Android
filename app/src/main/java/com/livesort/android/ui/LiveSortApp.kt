@@ -148,10 +148,17 @@ fun LiveSortApp() {
                             onImportSelected = { songs ->
                                 currentScreen = Screen.Home
                                 scope.launch(Dispatchers.IO) {
-                                    val resolved = songs.map { song ->
-                                        val uri = android.net.Uri.parse(song.filename)
-                                        val localPath = AudioScanner.resolveToLocalPath(context, uri)
-                                        if (localPath != null) song.copy(filename = localPath) else song
+                                    val resolved = try {
+                                        songs.map { song ->
+                                            val uri = android.net.Uri.parse(song.filename)
+                                            val localPath = AudioScanner.resolveToLocalPath(context, uri)
+                                            if (localPath != null) song.copy(filename = localPath) else song
+                                        }
+                                    } catch (e: Throwable) {
+                                        withContext(Dispatchers.Main) {
+                                            viewModel.postError("导入文件失败: ${e.message}")
+                                        }
+                                        return@launch
                                     }
                                     withContext(Dispatchers.Main) {
                                         viewModel.addSongs(resolved)
