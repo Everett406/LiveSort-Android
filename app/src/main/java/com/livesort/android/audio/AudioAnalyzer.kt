@@ -7,6 +7,11 @@ import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
+import be.tarsos.dsp.AudioEvent
+import be.tarsos.dsp.beatroot.BeatRootOnsetEventHandler
+import be.tarsos.dsp.io.TarsosDSPAudioFormat
+import be.tarsos.dsp.onsets.ComplexOnsetDetector
+import be.tarsos.dsp.onsets.OnsetHandler
 import be.tarsos.dsp.util.fft.FFT
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -442,61 +447,97 @@ class AudioAnalyzer(private val context: Context) {
     private fun estimateBpm(samples: FloatArray, sr: Int): Double {
         if (samples.size < sr * 5) return 0.0
 
-        val onsetDiff = computeOnsetEnvelope(samples, sr)
-        if (onsetDiff.size < 3) return 0.0
+        return try {
+            estimateBpmWithBeatRoot(samples, sr)
+        } catch (e: Exception) {
+            Log.w("AudioAnalyzer", "BeatRoot BPM failed, fallback to autocorrelation", e)
+            val onsetDiff = computeOnsetEnvelope(samples, sr)
+            estimateBpmByAutocorrelation(onsetDiff, sr)
+        }
+    }
 
-        // Smooth the onset envelope
-        val smooth = smoothFloatArray(onsetDiff, 5)
+    /**
+     * 使用 TarsosDSP BeatRoot 算法检测 BPM
+     * BeatRoot 基于 Simon Dixon 的论文，使用 onset + 动态规划估计 tempo
+     * 比简单的 onset 峰值检测更鲁棒，能有效避免半速/倍速误判
+     */
+    private fun estimateBpmWithBeatRoot(samples: FloatArray, sr: Int): Double {
+        val frameSize = 1024
+        val hopSize = 512
 
-        // Find peaks (onsets)
-        val onsets = mutableListOf<Int>()
-        val threshold = smooth.maxOrNull()?.times(0.15f) ?: 0f
-        for (i in 1 until smooth.size - 1) {
-            if (smooth[i] > smooth[i - 1] && smooth[i] > smooth[i + 1] && smooth[i] > threshold) {
-                onsets.add(i)
+        val format = TarsosDSPAudioFormat(sr.toFloat(), 16, 1, true, false)
+        val audioEvent = AudioEvent(format)
+
+        val broeh = BeatRootOnsetEventHandler()
+        val detector = ComplexOnsetDetector(frameSize)
+        detector.setHandler(broeh)
+
+        var samplesProcessed = 0L
+        val bytesPerSample = 2 // 16-bit mono
+
+        for (start in 0 until samples.size step hopSize) {
+            val end = min(start + frameSize, samples.size)
+            val frame = samples.copyOfRange(start, end)
+
+            // 补零到 frameSize
+            val paddedFrame = if (frame.size < frameSize) {
+                FloatArray(frameSize) { i -> if (i < frame.size) frame[i] else 0f }
+            } else {
+                frame
             }
+
+            audioEvent.setFloatBuffer(paddedFrame)
+            audioEvent.setBytesProcessed(samplesProcessed * bytesPerSample)
+
+            detector.process(audioEvent)
+            samplesProcessed += hopSize
         }
 
-        if (onsets.size < 2) {
-            return estimateBpmByAutocorrelation(onsetDiff, sr)
+        detector.processingFinished()
+
+        val beats = mutableListOf<Double>()
+        broeh.trackBeats(object : OnsetHandler {
+            override fun handleOnset(time: Double, salience: Double) {
+                beats.add(time)
+            }
+        })
+
+        if (beats.size < 2) {
+            throw IllegalStateException("Not enough beats detected: ${beats.size}")
         }
 
-        // Compute intervals between consecutive onsets
-        val frameDurationSec = 1.0 / 20.0  // 50ms per frame
+        // 计算 beat 间隔
         val intervals = mutableListOf<Double>()
-        for (i in 1 until onsets.size) {
-            val intervalSec = (onsets[i] - onsets[i - 1]) * frameDurationSec
-            if (intervalSec in 0.28..1.1) {  // ~55 BPM to ~215 BPM
-                intervals.add(intervalSec)
+        for (i in 1 until beats.size) {
+            intervals.add(beats[i] - beats[i - 1])
+        }
+
+        // 过滤异常值，只保留合理 BPM 范围对应的间隔 (55~215 BPM)
+        val validIntervals = intervals.filter { it in 0.28..1.1 }
+        if (validIntervals.isEmpty()) {
+            throw IllegalStateException("No valid beat intervals")
+        }
+
+        val medianInterval = validIntervals.sorted()[validIntervals.size / 2]
+        val bpm = 60.0 / medianInterval
+
+        // 考虑半速/倍速，选择最合理的 tempo
+        val candidates = listOf(bpm, bpm * 2, bpm / 2)
+        val bestBpm = candidates.filter { it in 55.0..210.0 }.minByOrNull { candidate ->
+            validIntervals.sumOf { interval ->
+                val expectedInterval = 60.0 / candidate
+                val ratio = interval / expectedInterval
+                // 允许 1x, 2x, 0.5x 的匹配
+                val error = if (ratio in 0.92..1.08 || ratio in 1.92..2.08 || ratio in 0.42..0.58) {
+                    0.0
+                } else {
+                    kotlin.math.abs(ratio - 1.0)
+                }
+                error
             }
-        }
+        } ?: bpm
 
-        if (intervals.size < 2) {
-            return estimateBpmByAutocorrelation(onsetDiff, sr)
-        }
-
-        // Build histogram of quantized intervals
-        val histogram = mutableMapOf<Double, Int>()
-        for (interval in intervals) {
-            val key = (interval * 20).toInt() / 20.0  // quantize to 0.05s
-            histogram[key] = (histogram[key] ?: 0) + 1
-        }
-
-        val bestInterval = histogram.maxByOrNull { it.value }?.key
-            ?: intervals.average()
-
-        // Also consider half and double tempo
-        val candidates = listOf(bestInterval, bestInterval * 2, bestInterval / 2)
-        val bestCandidate = candidates.filter { it in 0.28..1.1 }.minByOrNull { interval ->
-            val count = intervals.count {
-                val ratio = it / interval
-                ratio in 0.92..1.08 || ratio in 1.92..2.08 || ratio in 0.42..0.58
-            }
-            -count
-        } ?: bestInterval
-
-        val bpm = 60.0 / bestCandidate
-        return bpm.coerceIn(55.0, 210.0)
+        return bestBpm.coerceIn(55.0, 210.0)
     }
 
     private fun estimateBpmByAutocorrelation(envelope: FloatArray, sr: Int): Double {
