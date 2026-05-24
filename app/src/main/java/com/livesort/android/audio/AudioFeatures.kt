@@ -26,13 +26,13 @@ data class AudioFeatures(
 )
 
 /**
- * 音频分析器接口（平台无关�?
+ * 音频分析器接口（平台无关）
  */
 expect class AudioAnalyzer() {
     /**
-     * 分析音频文件，提取特�?
+     * 分析音频文件，提取特征
      * @param filePath 音频文件路径
-     * @return 音频特征，分析失败返�?null
+     * @return 音频特征，分析失败返回 null
      */
     suspend fun analyze(filePath: String): AudioFeatures?
 }

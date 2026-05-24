@@ -79,7 +79,7 @@ fun FileSelectScreen(
                 ),
                 shape = RoundedCornerShape(12.dp)
             ) {
-                Text(if (allSelected) "取消全�? else "全�?)
+                Text(if (allSelected) "取消全选" else "全选")
             }
         }
 
@@ -131,7 +131,7 @@ fun FileSelectScreen(
                 containerColor = MaterialTheme.colorScheme.primary
             )
         ) {
-            Text("导入选中�?${selectedIndices.size} �?)
+            Text("导入选中的 ${selectedIndices.size} 首")
         }
 
         Spacer(modifier = Modifier.height(16.dp))

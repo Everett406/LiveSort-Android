@@ -1,7 +1,7 @@
 package com.livesort.android.model
 
 /**
- * 歌曲数据模型，包含音频特征与元数�?
+ * 歌曲数据模型，包含音频特征与元数据
  */
 data class Song(
     val id: Int = 0,
@@ -17,7 +17,7 @@ data class Song(
     val energy: Double = 0.0,
     val brightness: Double = 0.0,
 
-    // 开头特�?
+    // 开头特征
     val startBpm: Double = 0.0,
     val startEnergy: Double = 0.0,
     val start10sEnergy: Double = 0.0,
@@ -41,7 +41,7 @@ data class Song(
     val brightnessNorm: Double = 0.0,
     val emotionScore: Double = 0.0,
 
-    // UI 状�?
+    // UI 状态
     val coverPath: String? = null,
     val isAnalyzed: Boolean = false,
     val isLoading: Boolean = false

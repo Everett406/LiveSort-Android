@@ -68,7 +68,7 @@ fun EmotionChart(
                 style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
             )
 
-            // 绘制实际曲线（实�?+ 渐变填充�?
+            // 绘制实际曲线（实线 + 渐变填充）
             val actualPath = Path()
             actualCurve.forEachIndexed { index, value ->
                 val x = paddingHorizontal + (index.toFloat() / (actualCurve.size - 1).coerceAtLeast(1)) * chartWidth
@@ -102,7 +102,7 @@ fun EmotionChart(
                 style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
             )
 
-            // 绘制数据�?
+            // 绘制数据点
             actualCurve.forEachIndexed { index, value ->
                 val x = paddingHorizontal + (index.toFloat() / (actualCurve.size - 1).coerceAtLeast(1)) * chartWidth
                 val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)

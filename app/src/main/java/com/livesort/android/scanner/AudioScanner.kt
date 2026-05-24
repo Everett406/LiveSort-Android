@@ -11,10 +11,10 @@ import androidx.documentfile.provider.DocumentFile
 import com.livesort.android.model.Song
 
 /**
- * 音频文件扫描�?
+ * 音频文件扫描器
  *
- * 支持两种方式�?
- * 1. MediaStore 扫描：按文件夹分组列出设备所有音�?
+ * 支持两种方式：
+ * 1. MediaStore 扫描：按文件夹分组列出设备所有音频
  * 2. SAF 文件夹扫描：用户选择特定文件夹后递归扫描
  */
 object AudioScanner {
@@ -22,7 +22,7 @@ object AudioScanner {
     private val AUDIO_EXTENSIONS = setOf("mp3", "wav", "flac", "m4a", "aac", "ogg", "wma")
 
     /**
-     * �?MediaStore 获取所有包含音频文件的文件�?
+     * 从 MediaStore 获取所有包含音频文件的文件夹
      */
     fun getAudioFolders(context: Context): List<AudioFolder> {
         val folders = mutableMapOf<String, MutableList<AudioFile>>()
@@ -115,7 +115,7 @@ object AudioScanner {
     }
 
     /**
-     * �?AudioFile 转换�?Song（用于导入到 ViewModel�?
+     * 将 AudioFile 转换为 Song（用于导入到 ViewModel）
      */
     fun AudioFile.toSong(id: Int): Song {
         return Song(
@@ -130,14 +130,14 @@ object AudioScanner {
     }
 
     /**
-     * 对于 content URI 的文件，复制�?app 私有缓存目录并返回真实路�?
+     * 对于 content URI 的文件，复制到 app 私有缓存目录并返回真实路径
      */
     fun resolveToLocalPath(context: Context, uri: Uri): String? {
         return try {
-            // 如果已经�?file:// 直接返回
+            // 如果已经是 file:// 直接返回
             if (uri.scheme == "file") return uri.path
 
-            // 尝试�?MediaStore 获取路径
+            // 尝试从 MediaStore 获取路径
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                 val projection = arrayOf(MediaStore.Audio.Media.DATA)
                 context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
@@ -148,7 +148,7 @@ object AudioScanner {
                 }
             }
 
-            // 复制到私有缓�?
+            // 复制到私有缓存
             val fileName = getFileNameFromUri(context, uri) ?: "temp_audio"
             val cacheFile = java.io.File(context.cacheDir, "audio_import/$fileName")
             cacheFile.parentFile?.mkdirs()

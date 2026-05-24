@@ -88,7 +88,7 @@ fun HomeScreen(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = "歌曲无感过渡与自动排�?,
+                    text = "歌曲无感过渡与自动排序",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -223,7 +223,7 @@ private fun StatsRow(songs: List<Song>) {
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         StatCard(
-            label = "曲目�?,
+            label = "曲目数",
             value = "${songs.size}",
             modifier = Modifier.weight(1f)
         )
@@ -409,7 +409,7 @@ private fun EmptyState(onImportClick: () -> Unit) {
                 modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text("导入文件�?)
+            Text("导入文件夹")
         }
     }
 }

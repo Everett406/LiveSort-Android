@@ -20,11 +20,11 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * 无感过渡播放�?
+ * 无感过渡播放器
  *
- * 使用�?ExoPlayer 实例实现 Crossfade�?
- * - 当前歌曲即将结束时，提前启动下一�?
- * - 重叠区域内，A 播放器淡出，B 播放器淡�?
+ * 使用双 ExoPlayer 实例实现 Crossfade：
+ * - 当前歌曲即将结束时，提前启动下一首
+ * - 重叠区域内，A 播放器淡出，B 播放器淡入
  * - 过渡完成后切换主次播放器
  */
 class CrossfadePlayer(context: Context) {
@@ -102,7 +102,7 @@ class CrossfadePlayer(context: Context) {
         transitionJob?.cancel()
         _isTransitioning.value = false
 
-        // 重置播放�?
+        // 重置播放器
         currentPlayer.stop()
         currentPlayer.clearMediaItems()
         nextPlayer.stop()
@@ -144,7 +144,7 @@ class CrossfadePlayer(context: Context) {
     }
 
     /**
-     * 启动进度追踪和自动过渡检�?
+     * 启动进度追踪和自动过渡检测
      */
     private fun startProgressTracking() {
         stopProgressTracking()
@@ -156,7 +156,7 @@ class CrossfadePlayer(context: Context) {
                 _durationMs.value = dur
                 _progress.value = pos.toFloat() / dur.toFloat()
 
-                // 检测是否需要启动过�?
+                // 检测是否需要启动过渡
                 if (!_isTransitioning.value && currentIndex + 1 < playlist.size) {
                     val nextSong = playlist[currentIndex + 1]
                     val mixEntryMs = (nextSong.mixEntrySec * 1000).toLong()
@@ -184,7 +184,7 @@ class CrossfadePlayer(context: Context) {
         if (_isTransitioning.value) return
         _isTransitioning.value = true
 
-        // 准备下一�?
+        // 准备下一首
         val uri = Uri.parse(nextSong.filename)
         nextPlayer.setMediaItem(MediaItem.fromUri(uri))
         nextPlayer.volume = 0f
@@ -202,7 +202,7 @@ class CrossfadePlayer(context: Context) {
                 delay(stepDurationMs)
             }
 
-            // 过渡完成，切换主�?
+            // 过渡完成，切换主次
             currentPlayer.stop()
             currentPlayer.clearMediaItems()
             currentPlayer.volume = 1f
@@ -216,7 +216,7 @@ class CrossfadePlayer(context: Context) {
             _currentSong.value = nextSong
             _isTransitioning.value = false
 
-            // 继续追踪�?currentPlayer 的进�?
+            // 继续追踪新 currentPlayer 的进度
             startProgressTracking()
         }
     }

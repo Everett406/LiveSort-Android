@@ -6,11 +6,11 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * 歌单排序�?
+ * 歌单排序器
  *
- * 基于目标情绪曲线和前后歌曲的过渡（BPM与能量）进行贪心优化�?
- * 对于歌单中的每一个位置，综合评估候选歌曲与目标曲线的贴合度�?
- * 并同时考虑与上一首歌曲的 BPM、能量是否自然衔接�?
+ * 基于目标情绪曲线和前后歌曲的过渡（BPM与能量）进行贪心优化。
+ * 对于歌单中的每一个位置，综合评估候选歌曲与目标曲线的贴合度，
+ * 并同时考虑与上一首歌曲的 BPM、能量是否自然衔接。
  */
 object PlaylistSorter {
 
@@ -24,10 +24,10 @@ object PlaylistSorter {
     )
 
     /**
-     * 对歌曲列表进行排�?
+     * 对歌曲列表进行排序
      *
-     * @param songs 待排序的歌曲列表（需要已经计算好 emotionScore�?
-     * @return 排序结果，包含排序后的歌单、实际情绪曲线、理想情绪曲�?
+     * @param songs 待排序的歌曲列表（需要已经计算好 emotionScore）
+     * @return 排序结果，包含排序后的歌单、实际情绪曲线、理想情绪曲线
      */
     fun sort(songs: List<Song>): SortResult {
         if (songs.isEmpty()) {
@@ -64,10 +64,10 @@ object PlaylistSorter {
                 val candStartEnergy = if (candidate.startEnergy > 0) candidate.startEnergy else candidate.energy
                 val candEmotion = candidate.emotionScore
 
-                // 1. 情绪差异权重（最重要�?
+                // 1. 情绪差异权重（最重要）
                 val emotionDiff = abs(candEmotion - targetEmotion)
 
-                // 2. BPM 差异：允许直接接，或者倍�?半速接（比�?60 �?120�?
+                // 2. BPM 差异：允许直接接，或者倍速/半速接（比如 60 接 120）
                 val maxBpm = max(candStartBpm, prevEndBpm)
                 val minBpm = max(min(candStartBpm, prevEndBpm), 1.0)
                 val bpmRatio = maxBpm / minBpm
@@ -76,7 +76,7 @@ object PlaylistSorter {
                 // 3. 能量差异
                 val energyDiff = abs(candStartEnergy - prevEndEnergy) * 50.0
 
-                // 综合 Cost：情绪贴合曲线最重要，其次是 BPM 衔接，再是能量平�?
+                // 综合 Cost：情绪贴合曲线最重要，其次是 BPM 衔接，再是能量平滑
                 val cost = emotionDiff * 1.5 + bpmDiff * 1.0 + energyDiff * 0.5
 
                 if (cost < bestCost) {
@@ -109,7 +109,7 @@ object PlaylistSorter {
             val energyNorm = song.energy / maxEnergy
             val brightnessNorm = song.brightness / maxBrightness
 
-            // 综合情绪�? �?BPM 和高能量代表高昂的情�?
+            // 综合情绪值: 高 BPM 和高能量代表高昂的情绪
             val emotionScore = (bpmNorm * 0.4 + energyNorm * 0.4 + brightnessNorm * 0.2) * 100.0
 
             song.copy(

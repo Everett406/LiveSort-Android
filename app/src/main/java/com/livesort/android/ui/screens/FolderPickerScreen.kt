@@ -63,7 +63,7 @@ fun FolderPickerScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "选择文件�?,
+            text = "选择文件夹",
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.onBackground
         )
@@ -89,7 +89,7 @@ fun FolderPickerScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "未找到音频文�?,
+                    text = "未找到音频文件",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -147,7 +147,7 @@ private fun FolderCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "${folder.fileCount} 首歌�?,
+                    text = "${folder.fileCount} 首歌曲",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp

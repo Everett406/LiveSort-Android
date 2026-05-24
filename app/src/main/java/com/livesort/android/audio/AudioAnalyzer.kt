@@ -15,7 +15,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Android 音频分析器实�?
+ * Android 音频分析器实现
  *
  * 使用 Android MediaCodec 解码 + TarsosDSP FFT 分析
  */

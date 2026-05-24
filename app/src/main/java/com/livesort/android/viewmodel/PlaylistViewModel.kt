@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
 /**
  * 歌单 ViewModel（纯 Kotlin，平台无关）
  *
- * 管理歌曲列表、分析状态、排序结�?
+ * 管理歌曲列表、分析状态、排序结果
  */
 class PlaylistViewModel(
     private val audioAnalyzer: AudioAnalyzer
@@ -42,7 +42,7 @@ class PlaylistViewModel(
     val currentPlayingIndex: StateFlow<Int> = _currentPlayingIndex.asStateFlow()
 
     /**
-     * 添加歌曲并触发分�?
+     * 添加歌曲并触发分析
      */
     fun addSongs(newSongs: List<Song>) {
         val updated = _songs.value + newSongs
@@ -60,7 +60,7 @@ class PlaylistViewModel(
     }
 
     /**
-     * 手动调整歌曲顺序（用户拖拽后�?
+     * 手动调整歌曲顺序（用户拖拽后）
      */
     fun reorderSortedSongs(fromIndex: Int, toIndex: Int) {
         val current = _sortedSongs.value.toMutableList()
@@ -73,7 +73,7 @@ class PlaylistViewModel(
     }
 
     /**
-     * 分析所有未分析的歌�?
+     * 分析所有未分析的歌曲
      */
     fun analyzeAll() {
         scope.launch {
