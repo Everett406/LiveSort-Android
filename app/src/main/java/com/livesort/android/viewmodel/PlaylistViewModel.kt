@@ -10,6 +10,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import android.util.Log
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -40,6 +41,9 @@ class PlaylistViewModel(
 
     private val _currentPlayingIndex = MutableStateFlow<Int>(-1)
     val currentPlayingIndex: StateFlow<Int> = _currentPlayingIndex.asStateFlow()
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     /**
      * 添加歌曲并触发分析
@@ -84,6 +88,7 @@ class PlaylistViewModel(
             }
 
             _isAnalyzing.value = true
+            _errorMessage.value = null
 
             // 标记为分析中
             val loadingMap = toAnalyze.associateBy { it.id }
@@ -92,10 +97,16 @@ class PlaylistViewModel(
             }
 
             // 串行分析（避免内存峰值）
-            val analyzed = mutableListOf<Song>()
+            var failedCount = 0
             for (song in toAnalyze) {
-                val features = withContext(Dispatchers.Default) {
-                    audioAnalyzer.analyze(song.filename)
+                val features = try {
+                    withContext(Dispatchers.Default) {
+                        audioAnalyzer.analyze(song.filename)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("PlaylistViewModel", "分析崩溃: ${song.title}", e)
+                    failedCount++
+                    null
                 }
 
                 val updatedSong = if (features != null) {
@@ -122,7 +133,6 @@ class PlaylistViewModel(
                 } else {
                     song.copy(isLoading = false)
                 }
-                analyzed.add(updatedSong)
 
                 // 实时更新列表
                 _songs.value = _songs.value.map { s ->
@@ -131,6 +141,9 @@ class PlaylistViewModel(
             }
 
             _isAnalyzing.value = false
+            if (failedCount > 0) {
+                _errorMessage.value = "$failedCount 首歌曲分析失败，请检查文件格式是否支持"
+            }
             reSort()
         }
     }
@@ -168,6 +181,11 @@ class PlaylistViewModel(
         _idealCurve.value = emptyList()
         _actualCurve.value = emptyList()
         _currentPlayingIndex.value = -1
+        _errorMessage.value = null
+    }
+
+    fun consumeError() {
+        _errorMessage.value = null
     }
 
     fun dispose() {

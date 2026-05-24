@@ -6,6 +6,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.Log
 import be.tarsos.dsp.util.fft.FFT
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -123,7 +124,7 @@ class AudioAnalyzer(private val context: Context) {
         } catch (e: Exception) {
             0.0
         } finally {
-            retriever.release()
+            try { retriever.release() } catch (_: Exception) {}
         }
     }
 
@@ -164,8 +165,8 @@ class AudioAnalyzer(private val context: Context) {
         val codec = try {
             MediaCodec.createDecoderByType(mime)
         } catch (e: Exception) {
-            e.printStackTrace()
-            extractor.release()
+            android.util.Log.e("AudioAnalyzer", "createDecoder failed for $mime", e)
+            try { extractor.release() } catch (_: Exception) {}
             return Pair(0, FloatArray(0))
         }
 
@@ -173,9 +174,9 @@ class AudioAnalyzer(private val context: Context) {
             codec.configure(format, null, null, 0)
             codec.start()
         } catch (e: Exception) {
-            e.printStackTrace()
-            codec.release()
-            extractor.release()
+            android.util.Log.e("AudioAnalyzer", "codec configure/start failed", e)
+            try { codec.release() } catch (_: Exception) {}
+            try { extractor.release() } catch (_: Exception) {}
             return Pair(0, FloatArray(0))
         }
 
@@ -190,8 +191,17 @@ class AudioAnalyzer(private val context: Context) {
                 if (!isEOS) {
                     val inputBufferId = codec.dequeueInputBuffer(10000)
                     if (inputBufferId >= 0) {
-                        val inputBuffer = codec.getInputBuffer(inputBufferId) ?: continue
-                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                        val inputBuffer = codec.getInputBuffer(inputBufferId)
+                        if (inputBuffer == null) {
+                            android.util.Log.w("AudioAnalyzer", "inputBuffer is null")
+                            continue
+                        }
+                        val sampleSize = try {
+                            extractor.readSampleData(inputBuffer, 0)
+                        } catch (e: Exception) {
+                            android.util.Log.e("AudioAnalyzer", "readSampleData failed", e)
+                            -1
+                        }
                         if (sampleSize < 0) {
                             codec.queueInputBuffer(inputBufferId, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             isEOS = true
@@ -205,7 +215,11 @@ class AudioAnalyzer(private val context: Context) {
                 val outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 10000)
                 when {
                     outputBufferId >= 0 -> {
-                        val outputBuffer = codec.getOutputBuffer(outputBufferId) ?: continue
+                        val outputBuffer = codec.getOutputBuffer(outputBufferId)
+                        if (outputBuffer == null) {
+                            android.util.Log.w("AudioAnalyzer", "outputBuffer is null")
+                            continue
+                        }
                         val pcmData = decodeOutputBuffer(outputBuffer, bufferInfo, channelCount)
                         samples.addAll(pcmData)
                         codec.releaseOutputBuffer(outputBufferId, false)
@@ -213,10 +227,13 @@ class AudioAnalyzer(private val context: Context) {
                             isEOS = true
                         }
                     }
+                    outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        // format changed, safe to ignore
+                    }
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("AudioAnalyzer", "decode loop crashed", e)
         } finally {
             try { codec.stop() } catch (_: Exception) {}
             try { codec.release() } catch (_: Exception) {}
