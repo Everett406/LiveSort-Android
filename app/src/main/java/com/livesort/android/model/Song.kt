@@ -2,6 +2,7 @@ package com.livesort.android.model
 
 /**
  * 歌曲数据模型，包含音频特征与元数据
+ * 完全对齐原作者 Python 实现
  */
 data class Song(
     val id: Int = 0,
@@ -29,11 +30,16 @@ data class Song(
     val end10sEnergy: Double = 0.0,
     val endDynamicEnergy: Double = 0.0,
 
-    // 过渡参数
-    val mixLeadSec: Double = 9.0,
+    // 过渡参数（对齐 Python 参考实现）
+    val dynamicWindowSec: Double = 10.0,
+    val tailSilenceSec: Double = 0.0,
+    val tailScanWindowSec: Double = 40.0,
+    val invalidTailSec: Double = 0.0,
+    val endActivityRatio: Double = 1.0,
+    val mixLeadSec: Double = 9.1,
     val mixBreathSec: Double = 1.75,
     val mixEffectStartSec: Double = 10.0,
-    val mixEntrySec: Double = 8.0,
+    val mixEntrySec: Double = 4.0,
 
     // 归一化特征（分析后计算）
     val bpmNorm: Double = 0.0,

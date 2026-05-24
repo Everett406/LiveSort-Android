@@ -20,10 +20,15 @@ import kotlin.math.sqrt
  * Android 音频分析器实现
  *
  * 使用 Android MediaCodec 解码 + TarsosDSP FFT 分析
+ * 完全对齐原作者 Python 实现 (audio_analyzer.py)
  */
 class AudioAnalyzer(private val context: Context) {
 
     private val targetSampleRate = 22050
+
+    // librosa.feature.rms 默认参数
+    private val rmsFrameLength = 2048
+    private val rmsHopLength = 512
 
     suspend fun analyze(filePath: String): AudioFeatures? = withContext(Dispatchers.Default) {
         val uri = Uri.parse(filePath)
@@ -51,35 +56,52 @@ class AudioAnalyzer(private val context: Context) {
             }
             val sr = targetSampleRate
 
+            // 对齐 Python：前30s用于整体特征
             val mainCount = min((min(30.0, durationSec) * sr).toInt(), samples.size)
             val mainSamples = samples.copyOfRange(0, mainCount)
+
+            // 对齐 Python：首尾15s用于过渡分析
             val startCount = min((min(15.0, durationSec) * sr).toInt(), samples.size)
             val startSamples = samples.copyOfRange(0, startCount)
+
             val endCount = (min(15.0, durationSec) * sr).toInt()
             val endStartIdx = max(0, samples.size - endCount)
             val endSamples = samples.copyOfRange(endStartIdx, samples.size)
-            val tailCount = (min(40.0, durationSec) * sr).toInt()
+
+            // 对齐 Python：尾部40s（或整个文件）用于 invalid tail 扫描
+            val tailScanWindowSec = min(40.0, durationSec)
+            val tailCount = (tailScanWindowSec * sr).toInt()
             val tailScanStartIdx = max(0, samples.size - tailCount)
             val tailScanSamples = samples.copyOfRange(tailScanStartIdx, samples.size)
 
-            val start10sCount = min(sr * 10, startSamples.size)
-            val start10sSamples = startSamples.copyOfRange(0, start10sCount)
-            val end10sStart = max(0, endSamples.size - sr * 10)
+            // 首尾10s mix window
+            val mixWindowSamples = sr * 10
+            val start10sSamples = startSamples.copyOfRange(0, min(mixWindowSamples, startSamples.size))
+            val end10sStart = max(0, endSamples.size - mixWindowSamples)
             val end10sSamples = endSamples.copyOfRange(end10sStart, endSamples.size)
 
+            // BPM（整体、开头、结尾）
             val bpm = estimateBpm(mainSamples, sr)
             val startBpm = estimateBpm(startSamples, sr)
             val endBpm = estimateBpm(endSamples, sr)
 
+            // Energy（整体、开头、结尾、10s窗口）
             val energy = computeRmsEnergy(mainSamples)
             val startEnergy = computeRmsEnergy(startSamples)
             val endEnergy = computeRmsEnergy(endSamples)
             val start10sEnergy = computeRmsEnergy(start10sSamples)
             val end10sEnergy = computeRmsEnergy(end10sSamples)
 
+            // Brightness
             val brightness = computeSpectralCentroid(mainSamples, sr)
 
+            // 尾部静默分析（对齐 Python extract_features 尾部分析）
+            val (tailSilenceSec, endActivityRatio) = estimateTailSilence(endSamples, sr)
+
+            // Invalid tail 分析（对齐 Python estimate_invalid_tail_sec）
             val invalidTailSec = estimateInvalidTailSec(tailScanSamples, sr)
+
+            // 动态窗口（对齐 Python）
             val dynamicWindowSec = (10.0 + invalidTailSec * 0.55).coerceIn(8.0, 24.0)
             val dynamicWindowSamples = (sr * dynamicWindowSec).toInt()
             val effectiveTailSamples = (sr * invalidTailSec).toInt()
@@ -97,8 +119,11 @@ class AudioAnalyzer(private val context: Context) {
             val startDynamicEnergy = computeRmsEnergy(startDynamicSamples)
             val endDynamicEnergy = computeRmsEnergy(endDynamicSamples)
 
-            val mixEntrySec = (4.0 + invalidTailSec).coerceIn(4.0, 44.0)
+            // Mix 参数（对齐 Python）
+            val mixLeadSec = (9.1 + tailSilenceSec * 0.62).coerceIn(7.4, 13.2)
+            val mixBreathSec = (1.75 + tailSilenceSec * 0.22).coerceIn(1.35, 3.2)
             val mixEffectStartSec = (10.0 + invalidTailSec).coerceIn(8.0, 50.0)
+            val mixEntrySec = (4.0 + invalidTailSec).coerceIn(4.0, 44.0)
 
             AudioFeatures(
                 durationSec = durationSec,
@@ -113,8 +138,15 @@ class AudioAnalyzer(private val context: Context) {
                 endEnergy = endEnergy,
                 end10sEnergy = end10sEnergy,
                 endDynamicEnergy = endDynamicEnergy,
-                mixEntrySec = mixEntrySec,
-                mixEffectStartSec = mixEffectStartSec
+                dynamicWindowSec = dynamicWindowSec,
+                tailSilenceSec = tailSilenceSec,
+                tailScanWindowSec = tailScanWindowSec,
+                invalidTailSec = invalidTailSec,
+                endActivityRatio = endActivityRatio,
+                mixLeadSec = mixLeadSec,
+                mixBreathSec = mixBreathSec,
+                mixEffectStartSec = mixEffectStartSec,
+                mixEntrySec = mixEntrySec
             )
         } catch (e: Throwable) {
             Log.e("AudioAnalyzer", "analyze crashed for $filePath", e)
@@ -182,7 +214,7 @@ class AudioAnalyzer(private val context: Context) {
         val codec = try {
             MediaCodec.createDecoderByType(mime)
         } catch (e: Exception) {
-            android.util.Log.e("AudioAnalyzer", "createDecoder failed for $mime", e)
+            Log.e("AudioAnalyzer", "createDecoder failed for $mime", e)
             try { extractor.release() } catch (_: Exception) {}
             return Pair(0, FloatArray(0))
         }
@@ -191,7 +223,7 @@ class AudioAnalyzer(private val context: Context) {
             codec.configure(format, null, null, 0)
             codec.start()
         } catch (e: Exception) {
-            android.util.Log.e("AudioAnalyzer", "codec configure/start failed", e)
+            Log.e("AudioAnalyzer", "codec configure/start failed", e)
             try { codec.release() } catch (_: Exception) {}
             try { extractor.release() } catch (_: Exception) {}
             return Pair(0, FloatArray(0))
@@ -211,13 +243,13 @@ class AudioAnalyzer(private val context: Context) {
                     if (inputBufferId >= 0) {
                         val inputBuffer = codec.getInputBuffer(inputBufferId)
                         if (inputBuffer == null) {
-                            android.util.Log.w("AudioAnalyzer", "inputBuffer is null")
+                            Log.w("AudioAnalyzer", "inputBuffer is null")
                             continue
                         }
                         val sampleSize = try {
                             extractor.readSampleData(inputBuffer, 0)
                         } catch (e: Exception) {
-                            android.util.Log.e("AudioAnalyzer", "readSampleData failed", e)
+                            Log.e("AudioAnalyzer", "readSampleData failed", e)
                             -1
                         }
                         if (sampleSize < 0) {
@@ -305,6 +337,108 @@ class AudioAnalyzer(private val context: Context) {
 
     // --- Feature Extraction ---
 
+    /**
+     * 对齐 librosa.feature.rms：计算帧级 RMS
+     * frame_length=2048, hop_length=512
+     */
+    private fun computeFrameRms(samples: FloatArray, frameLength: Int = 2048, hopLength: Int = 512): FloatArray {
+        if (samples.isEmpty()) return FloatArray(0)
+        val numFrames = max(1, (samples.size - frameLength) / hopLength + 1)
+        val rms = FloatArray(numFrames)
+        for (i in 0 until numFrames) {
+            var sum = 0.0
+            for (j in 0 until frameLength) {
+                val idx = i * hopLength + j
+                if (idx < samples.size) {
+                    sum += samples[idx] * samples[idx]
+                }
+            }
+            rms[i] = sqrt(sum / frameLength).toFloat()
+        }
+        return rms
+    }
+
+    /**
+     * 计算尾部静默时间和活跃度比例（对齐 Python extract_features 尾部分析）
+     */
+    private fun estimateTailSilence(endSamples: FloatArray, sr: Int): Pair<Double, Double> {
+        if (endSamples.isEmpty()) return Pair(0.0, 1.0)
+
+        val endRms = computeFrameRms(endSamples)
+        if (endRms.isEmpty()) return Pair(0.0, 1.0)
+
+        val peakRms = endRms.maxOrNull() ?: 0f
+        val activeThreshold = max(peakRms * 0.2f, 1e-4f)
+
+        var lastActiveIdx = -1
+        for (i in endRms.indices) {
+            if (endRms[i] >= activeThreshold) {
+                lastActiveIdx = i
+            }
+        }
+
+        val endLenSec = endSamples.size.toDouble() / sr
+        val lastActiveSec = if (lastActiveIdx >= 0) {
+            lastActiveIdx * rmsHopLength.toDouble() / sr
+        } else {
+            0.0
+        }
+        val tailSilenceSec = max(0.0, endLenSec - lastActiveSec)
+        val endActivityRatio = ((endLenSec - tailSilenceSec) / max(endLenSec, 1e-6)).coerceIn(0.0, 1.0)
+
+        return Pair(tailSilenceSec, endActivityRatio)
+    }
+
+    /**
+     * 估计无效尾部时间（对齐 Python estimate_invalid_tail_sec）
+     */
+    private fun estimateInvalidTailSec(tailScanSamples: FloatArray, sr: Int): Double {
+        if (tailScanSamples.isEmpty()) return 0.0
+
+        val tailRms = computeFrameRms(tailScanSamples)
+        if (tailRms.isEmpty()) return 0.0
+
+        // 5-point moving average smooth (mode='same')
+        val smooth = FloatArray(tailRms.size)
+        val kernelSize = 5
+        for (i in tailRms.indices) {
+            var sum = 0.0
+            var count = 0
+            for (j in -kernelSize / 2..kernelSize / 2) {
+                val idx = i + j
+                if (idx in tailRms.indices) {
+                    sum += tailRms[idx]
+                    count++
+                }
+            }
+            smooth[i] = (sum / count).toFloat()
+        }
+
+        val peakRms = tailRms.maxOrNull() ?: 0f
+        if (peakRms <= 1e-7) return tailScanSamples.size.toDouble() / sr
+
+        // 40th percentile
+        val sortedSmooth = smooth.sorted()
+        val floorRms = sortedSmooth[smooth.size * 40 / 100]
+        val activeThreshold = max(peakRms * 0.065f, max(floorRms * 0.62f, 4e-5f))
+
+        var lastActiveIdx = -1
+        for (i in smooth.indices) {
+            if (smooth[i] >= activeThreshold) {
+                lastActiveIdx = i
+            }
+        }
+
+        val tailLenSec = tailScanSamples.size.toDouble() / sr
+        val invalidTail = if (lastActiveIdx >= 0) {
+            max(0.0, tailLenSec - (lastActiveIdx * rmsHopLength.toDouble() / sr))
+        } else {
+            tailLenSec
+        }
+
+        return if (invalidTail < 0.4) 0.0 else min(40.0, invalidTail)
+    }
+
     private fun estimateBpm(samples: FloatArray, sr: Int): Double {
         if (samples.size < sr * 5) return 0.0
 
@@ -324,7 +458,6 @@ class AudioAnalyzer(private val context: Context) {
         }
 
         if (onsets.size < 2) {
-            // Fallback to autocorrelation if no clear onsets
             return estimateBpmByAutocorrelation(onsetDiff, sr)
         }
 
@@ -464,62 +597,5 @@ class AudioAnalyzer(private val context: Context) {
         }
 
         return if (magnitudeSum > 0) weightedSum / magnitudeSum else 0.0
-    }
-
-    private fun estimateInvalidTailSec(samples: FloatArray, sr: Int): Double {
-        if (samples.isEmpty()) return 0.0
-
-        val frameSize = sr / 20
-        val numFrames = samples.size / frameSize
-        if (numFrames == 0) return 0.0
-
-        val rmsValues = FloatArray(numFrames)
-        for (i in 0 until numFrames) {
-            var sum = 0.0
-            for (j in 0 until frameSize) {
-                val idx = i * frameSize + j
-                if (idx < samples.size) sum += samples[idx] * samples[idx]
-            }
-            rmsValues[i] = sqrt(sum / frameSize).toFloat()
-        }
-
-        val smooth = FloatArray(rmsValues.size)
-        val kernel = 5
-        for (i in rmsValues.indices) {
-            var sum = 0.0
-            var count = 0
-            for (j in -kernel / 2..kernel / 2) {
-                val idx = i + j
-                if (idx in rmsValues.indices) {
-                    sum += rmsValues[idx]
-                    count++
-                }
-            }
-            smooth[i] = (sum / count).toFloat()
-        }
-
-        val peakRms = smooth.maxOrNull() ?: 0f
-        if (peakRms <= 1e-7) return samples.size.toDouble() / sr
-
-        val sortedSmooth = smooth.sorted()
-        val floorRms = sortedSmooth[smooth.size * 40 / 100]
-        val activeThreshold = kotlin.math.max(peakRms * 0.065f, kotlin.math.max(floorRms * 0.62f, 4e-5f))
-
-        var lastActiveIdx = -1
-        for (i in smooth.indices.reversed()) {
-            if (smooth[i] >= activeThreshold) {
-                lastActiveIdx = i
-                break
-            }
-        }
-
-        val tailLenSec = samples.size.toDouble() / sr
-        val invalidTail = if (lastActiveIdx >= 0) {
-            kotlin.math.max(0.0, tailLenSec - (lastActiveIdx * frameSize.toDouble() / sr))
-        } else {
-            tailLenSec
-        }
-
-        return if (invalidTail < 0.4) 0.0 else min(40.0, invalidTail)
     }
 }

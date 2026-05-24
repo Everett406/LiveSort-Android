@@ -34,6 +34,7 @@ import com.livesort.android.ui.screens.AlgorithmScreen
 import com.livesort.android.ui.screens.FileSelectScreen
 import com.livesort.android.ui.screens.FolderPickerScreen
 import com.livesort.android.ui.screens.HomeScreen
+import com.livesort.android.ui.screens.PlaylistDetailScreen
 import com.livesort.android.audio.AudioAnalyzer
 import com.livesort.android.viewmodel.PlaylistViewModel
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +46,7 @@ sealed class Screen {
     data object FolderPicker : Screen()
     data class FileSelect(val folder: AudioFolder) : Screen()
     data object Algorithm : Screen()
+    data object PlaylistDetail : Screen()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -112,6 +114,9 @@ fun LiveSortApp() {
                         )
                     )
                 }
+                is Screen.PlaylistDetail -> {
+                    // PlaylistDetailScreen has its own top bar
+                }
                 else -> {}
             }
         },
@@ -130,7 +135,24 @@ fun LiveSortApp() {
                     is Screen.Home -> {
                         HomeScreen(
                             viewModel = viewModel,
-                            onImportClick = { currentScreen = Screen.FolderPicker }
+                            onImportClick = { currentScreen = Screen.FolderPicker },
+                            onChartClick = { currentScreen = Screen.PlaylistDetail }
+                        )
+                    }
+
+                    is Screen.PlaylistDetail -> {
+                        val idealCurve by viewModel.idealCurve.collectAsState()
+                        val actualCurve by viewModel.actualCurve.collectAsState()
+                        PlaylistDetailScreen(
+                            sortedSongs = sortedSongs,
+                            idealCurve = idealCurve,
+                            actualCurve = actualCurve,
+                            currentPlayingIndex = currentPlayingIndex,
+                            onBack = { currentScreen = Screen.Home },
+                            onSongClick = { index ->
+                                viewModel.setPlayingIndex(index)
+                                currentScreen = Screen.Home
+                            }
                         )
                     }
 

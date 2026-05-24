@@ -53,15 +53,15 @@ object PlaylistSorter {
             val targetEmotion = idealScores[i]
             val prevSong = sorted.last()
 
-            val prevEndBpm = if (prevSong.endBpm > 0) prevSong.endBpm else prevSong.bpm
-            val prevEndEnergy = if (prevSong.endEnergy > 0) prevSong.endEnergy else prevSong.energy
+            val prevEndBpm = if (prevSong.endBpm > 0) prevSong.endBpm else prevSong.bpm.coerceAtLeast(120.0)
+            val prevEndEnergy = if (prevSong.endEnergy > 0) prevSong.endEnergy else prevSong.energy.coerceAtLeast(0.5)
 
             var bestSong: Song? = null
             var bestCost = Double.POSITIVE_INFINITY
 
             for (candidate in remaining) {
-                val candStartBpm = if (candidate.startBpm > 0) candidate.startBpm else candidate.bpm
-                val candStartEnergy = if (candidate.startEnergy > 0) candidate.startEnergy else candidate.energy
+                val candStartBpm = if (candidate.startBpm > 0) candidate.startBpm else candidate.bpm.coerceAtLeast(120.0)
+                val candStartEnergy = if (candidate.startEnergy > 0) candidate.startEnergy else candidate.energy.coerceAtLeast(0.5)
                 val candEmotion = candidate.emotionScore
 
                 // 1. 情绪差异权重（最重要）

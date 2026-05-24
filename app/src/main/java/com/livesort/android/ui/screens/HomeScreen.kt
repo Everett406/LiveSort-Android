@@ -1,6 +1,7 @@
 package com.livesort.android.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.rememberScrollState
@@ -66,6 +67,7 @@ import kotlinx.coroutines.withContext
 fun HomeScreen(
     viewModel: PlaylistViewModel,
     onImportClick: () -> Unit,
+    onChartClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val songs by viewModel.songs.collectAsState()
@@ -175,7 +177,7 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Emotion Chart
+            // Emotion Chart (clickable to enlarge)
             EmotionChart(
                 idealCurve = idealCurve,
                 actualCurve = actualCurve,
@@ -183,6 +185,7 @@ fun HomeScreen(
                     .fillMaxWidth()
                     .height(180.dp)
                     .clip(RoundedCornerShape(20.dp))
+                    .clickable { onChartClick() }
             )
 
             Spacer(modifier = Modifier.height(16.dp))
