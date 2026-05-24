@@ -46,7 +46,7 @@ jobs:
         env:
           SIGNING_KEY_BASE64: ${{ secrets.SIGNING_KEY_BASE64 }}
         run: |
-          echo "$SIGNING_KEY_BASE64" | base64 -d > androidApp/release.keystore
+          echo "$SIGNING_KEY_BASE64" | base64 -d > app/release.keystore
 
       - name: Determine version
         id: version
