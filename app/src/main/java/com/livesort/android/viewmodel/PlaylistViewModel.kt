@@ -11,7 +11,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import android.util.Log
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
 
 /**
@@ -96,54 +99,64 @@ class PlaylistViewModel(
                 if (song.id in loadingMap) song.copy(isLoading = true) else song
             }
 
-            // 串行分析（避免内存峰值）
+            // 并行分析（限制 3 并发，避免内存峰值）
+            val semaphore = Semaphore(3)
             var failedCount = 0
-            for (song in toAnalyze) {
-                val features = try {
-                    withContext(Dispatchers.Default) {
-                        audioAnalyzer.analyze(song.filename)
+
+            val deferreds = toAnalyze.map { song ->
+                async(Dispatchers.Default) {
+                    semaphore.acquire()
+                    try {
+                        val features = try {
+                            audioAnalyzer.analyze(song.filename)
+                        } catch (e: Throwable) {
+                            Log.e("PlaylistViewModel", "分析崩溃: ${song.title}", e)
+                            synchronized(this@PlaylistViewModel) { failedCount++ }
+                            null
+                        }
+
+                        val updatedSong = if (features != null) {
+                            song.copy(
+                                durationSec = features.durationSec,
+                                bpm = features.bpm,
+                                energy = features.energy,
+                                brightness = features.brightness,
+                                startBpm = features.startBpm,
+                                startEnergy = features.startEnergy,
+                                start10sEnergy = features.start10sEnergy,
+                                startDynamicEnergy = features.startDynamicEnergy,
+                                endBpm = features.endBpm,
+                                endEnergy = features.endEnergy,
+                                end10sEnergy = features.end10sEnergy,
+                                endDynamicEnergy = features.endDynamicEnergy,
+                                dynamicWindowSec = features.dynamicWindowSec,
+                                tailSilenceSec = features.tailSilenceSec,
+                                tailScanWindowSec = features.tailScanWindowSec,
+                                invalidTailSec = features.invalidTailSec,
+                                endActivityRatio = features.endActivityRatio,
+                                mixLeadSec = features.mixLeadSec,
+                                mixBreathSec = features.mixBreathSec,
+                                mixEffectStartSec = features.mixEffectStartSec,
+                                mixEntrySec = features.mixEntrySec,
+                                isAnalyzed = true,
+                                isLoading = false
+                            )
+                        } else {
+                            song.copy(isLoading = false)
+                        }
+
+                        // 在主线程更新列表
+                        withContext(Dispatchers.Main.immediate) {
+                            _songs.value = _songs.value.map { s ->
+                                if (s.id == updatedSong.id) updatedSong else s
+                            }
+                        }
+                    } finally {
+                        semaphore.release()
                     }
-                } catch (e: Throwable) {
-                    Log.e("PlaylistViewModel", "分析崩溃: ${song.title}", e)
-                    failedCount++
-                    null
-                }
-
-                val updatedSong = if (features != null) {
-                    song.copy(
-                        durationSec = features.durationSec,
-                        bpm = features.bpm,
-                        energy = features.energy,
-                        brightness = features.brightness,
-                        startBpm = features.startBpm,
-                        startEnergy = features.startEnergy,
-                        start10sEnergy = features.start10sEnergy,
-                        startDynamicEnergy = features.startDynamicEnergy,
-                        endBpm = features.endBpm,
-                        endEnergy = features.endEnergy,
-                        end10sEnergy = features.end10sEnergy,
-                        endDynamicEnergy = features.endDynamicEnergy,
-                        dynamicWindowSec = features.dynamicWindowSec,
-                        tailSilenceSec = features.tailSilenceSec,
-                        tailScanWindowSec = features.tailScanWindowSec,
-                        invalidTailSec = features.invalidTailSec,
-                        endActivityRatio = features.endActivityRatio,
-                        mixLeadSec = features.mixLeadSec,
-                        mixBreathSec = features.mixBreathSec,
-                        mixEffectStartSec = features.mixEffectStartSec,
-                        mixEntrySec = features.mixEntrySec,
-                        isAnalyzed = true,
-                        isLoading = false
-                    )
-                } else {
-                    song.copy(isLoading = false)
-                }
-
-                // 实时更新列表
-                _songs.value = _songs.value.map { s ->
-                    if (s.id == updatedSong.id) updatedSong else s
                 }
             }
+            deferreds.awaitAll()
 
             _isAnalyzing.value = false
             if (failedCount > 0) {

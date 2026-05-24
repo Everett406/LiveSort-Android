@@ -1,6 +1,5 @@
 package com.livesort.android.ui.screens
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,12 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -44,9 +38,6 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.livesort.android.model.Song
 import com.livesort.android.sorting.InterestCurve
-import com.livesort.android.ui.components.createSmoothPath
-import com.livesort.android.ui.theme.OrangePrimary
-import com.livesort.android.ui.theme.OrangeSoft
 
 @Composable
 fun PlaylistDetailScreen(
@@ -83,31 +74,7 @@ fun PlaylistDetailScreen(
             )
         }
 
-        // Large Emotion Chart
-        LargeEmotionChart(
-            idealCurve = idealCurve,
-            actualCurve = actualCurve,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(280.dp)
-                .padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(20.dp))
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Section labels
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            SectionLegend("理想曲线", MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f), true)
-            SectionLegend("实际曲线", OrangePrimary, false)
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
+        // Note: Emotion chart removed from detail screen to give more room to song list
 
         // Song list
         Text(
@@ -134,127 +101,6 @@ fun PlaylistDetailScreen(
                     ),
                     isPlaying = index == currentPlayingIndex,
                     onClick = { onSongClick(index) }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SectionLegend(label: String, color: Color, isDashed: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .width(20.dp)
-                .height(if (isDashed) 2.dp else 3.dp)
-                .background(color, RoundedCornerShape(1.dp))
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Text(
-            text = label,
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-private fun LargeEmotionChart(
-    idealCurve: List<Double>,
-    actualCurve: List<Double>,
-    modifier: Modifier = Modifier
-) {
-    val surfaceColor = MaterialTheme.colorScheme.surfaceVariant
-    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
-
-    Box(modifier = modifier) {
-        Canvas(modifier = Modifier.matchParentSize()) {
-            val width = size.width
-            val height = size.height
-            val paddingHorizontal = 32.dp.toPx()
-            val paddingVertical = 28.dp.toPx()
-
-            val chartWidth = width - paddingHorizontal * 2
-            val chartHeight = height - paddingVertical * 2
-
-            // 背景
-            drawRect(color = surfaceColor)
-
-            if (idealCurve.isEmpty() || actualCurve.isEmpty()) return@Canvas
-
-            val maxValue = 100.0
-
-            // 绘制网格线
-            val gridLines = listOf(0.2, 0.4, 0.6, 0.8)
-            for (grid in gridLines) {
-                val y = paddingVertical + chartHeight * (1 - grid).toFloat()
-                drawLine(
-                    color = onSurfaceVariant.copy(alpha = 0.08f),
-                    start = Offset(paddingHorizontal, y),
-                    end = Offset(paddingHorizontal + chartWidth, y),
-                    strokeWidth = 1.dp.toPx()
-                )
-            }
-
-            // 绘制理想曲线（虚线）
-            val idealPoints = idealCurve.mapIndexed { index, value ->
-                val x = paddingHorizontal + (index.toFloat() / (idealCurve.size - 1).coerceAtLeast(1)) * chartWidth
-                val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)
-                Offset(x, y)
-            }
-            val idealPath = createSmoothPath(idealPoints)
-            drawPath(
-                path = idealPath,
-                color = onSurfaceVariant.copy(alpha = 0.5f),
-                style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
-            )
-
-            val actualPoints = actualCurve.mapIndexed { index, value ->
-                val x = paddingHorizontal + (index.toFloat() / (actualCurve.size - 1).coerceAtLeast(1)) * chartWidth
-                val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)
-                Offset(x, y)
-            }
-            val actualPath = createSmoothPath(actualPoints)
-
-            // 闭合路径用于填充
-            val fillPath = Path().apply {
-                addPath(actualPath)
-                val last = actualPoints.last()
-                val first = actualPoints.first()
-                lineTo(last.x, paddingVertical + chartHeight)
-                lineTo(first.x, paddingVertical + chartHeight)
-                close()
-            }
-
-            drawPath(
-                path = fillPath,
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        OrangePrimary.copy(alpha = 0.18f),
-                        OrangePrimary.copy(alpha = 0.02f)
-                    ),
-                    startY = paddingVertical,
-                    endY = paddingVertical + chartHeight
-                )
-            )
-
-            drawPath(
-                path = actualPath,
-                color = OrangePrimary,
-                style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round)
-            )
-
-            // 绘制数据点
-            actualPoints.forEach { p ->
-                drawCircle(
-                    color = OrangePrimary,
-                    radius = 5.dp.toPx(),
-                    center = p
-                )
-                drawCircle(
-                    color = Color.White,
-                    radius = 2.5.dp.toPx(),
-                    center = p
                 )
             }
         }

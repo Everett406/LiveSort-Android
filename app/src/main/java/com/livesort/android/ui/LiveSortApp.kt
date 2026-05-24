@@ -64,9 +64,10 @@ fun LiveSortApp() {
 
     val sortedSongs by viewModel.sortedSongs.collectAsState()
     val currentPlayingIndex by viewModel.currentPlayingIndex.collectAsState()
+    val playerCurrentSong by (player?.currentSong ?: remember { kotlinx.coroutines.flow.MutableStateFlow<Song?>(null) }).collectAsState()
 
-    // Lazy initialization: only create ExoPlayer when user actually has songs to play
-    LaunchedEffect(sortedSongs, currentPlayingIndex) {
+    // Initialize player when songs are available
+    LaunchedEffect(sortedSongs) {
         if (sortedSongs.isNotEmpty() && currentPlayingIndex >= 0) {
             if (player == null) {
                 player = CrossfadePlayer(context)
@@ -75,6 +76,17 @@ fun LiveSortApp() {
                 }
             }
             player?.setPlaylist(sortedSongs, currentPlayingIndex)
+        }
+    }
+
+    // When user manually selects a different song, switch to it
+    // But do NOT interrupt if the player already crossfaded to this song internally
+    LaunchedEffect(currentPlayingIndex) {
+        if (currentPlayingIndex >= 0 && sortedSongs.isNotEmpty() && player != null) {
+            val targetSong = sortedSongs.getOrNull(currentPlayingIndex)
+            if (targetSong != null && playerCurrentSong?.id != targetSong.id) {
+                player?.playAt(currentPlayingIndex)
+            }
         }
     }
 
@@ -189,7 +201,8 @@ fun LiveSortApp() {
                         FolderPickerScreen(
                             onFolderSelected = { folder ->
                                 currentScreen = Screen.FileSelect(folder)
-                            }
+                            },
+                            onBack = { currentScreen = Screen.Home }
                         )
                     }
 

@@ -1,13 +1,18 @@
 package com.livesort.android.ui.screens
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -16,7 +21,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -121,6 +132,39 @@ fun AlgorithmScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 22.sp
             )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Crossfade 曲线示意图
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "过渡参数变化示意（10秒窗口）",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    CrossfadeChart(modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        ChartLegend("上一首音量", Color(0xFF333333), isDashed = false)
+                        ChartLegend("下一首音量", Color(0xFF999999), isDashed = false)
+                        ChartLegend("下潜深度", Color(0xFF4A90D9), isDashed = true)
+                        ChartLegend("混响湿度", Color(0xFFE74C3C), isDashed = true)
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -189,5 +233,160 @@ private fun RowWithIcon(icon: String, text: String) {
             lineHeight = 20.sp,
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+@Composable
+private fun ChartLegend(label: String, color: Color, isDashed: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        val pathEffect = if (isDashed) PathEffect.dashPathEffect(floatArrayOf(6f, 4f), 0f) else null
+        Box(
+            modifier = Modifier
+                .width(18.dp)
+                .height(2.5.dp)
+        ) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.matchParentSize()) {
+                drawLine(
+                    color = color,
+                    start = Offset(0f, size.height / 2),
+                    end = Offset(size.width, size.height / 2),
+                    strokeWidth = 2.5.dp.toPx(),
+                    pathEffect = pathEffect,
+                    cap = StrokeCap.Round
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+            text = label,
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun CrossfadeChart(modifier: Modifier = Modifier) {
+    Box(modifier = modifier) {
+        Canvas(modifier = Modifier.matchParentSize()) {
+            val width = size.width
+            val height = size.height
+            val padLeft = 28.dp.toPx()
+            val padRight = 12.dp.toPx()
+            val padTop = 8.dp.toPx()
+            val padBottom = 24.dp.toPx()
+            val chartW = width - padLeft - padRight
+            val chartH = height - padTop - padBottom
+
+            // 背景
+            drawRect(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+
+            // 网格线
+            val gridY = listOf(0.25f, 0.5f, 0.75f)
+            for (gy in gridY) {
+                val y = padTop + chartH * (1 - gy)
+                drawLine(
+                    color = Color.Gray.copy(alpha = 0.15f),
+                    start = Offset(padLeft, y),
+                    end = Offset(padLeft + chartW, y),
+                    strokeWidth = 1.dp.toPx()
+                )
+            }
+
+            val steps = 100
+            fun xOf(t: Float) = padLeft + t * chartW
+            fun yOf(v: Float) = padTop + chartH * (1 - v)
+
+            // 上一首音量：1.0 -> 0.0（S-curve）
+            val prevVol = (0..steps).map { i ->
+                val t = i / steps.toFloat()
+                val v = 1f - (t * t * (3 - 2 * t)) // smoothstep
+                Offset(xOf(t), yOf(v))
+            }
+            for (i in 0 until prevVol.size - 1) {
+                drawLine(
+                    color = Color(0xFF333333),
+                    start = prevVol[i],
+                    end = prevVol[i + 1],
+                    strokeWidth = 2.5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+
+            // 下一首音量：0.0 -> 1.0（delayed S-curve）
+            val nextVol = (0..steps).map { i ->
+                val t = i / steps.toFloat()
+                val delay = 0.15f
+                val v = if (t < delay) 0f else {
+                    val tt = (t - delay) / (1 - delay)
+                    tt * tt * (3 - 2 * tt)
+                }
+                Offset(xOf(t), yOf(v))
+            }
+            for (i in 0 until nextVol.size - 1) {
+                drawLine(
+                    color = Color(0xFF999999),
+                    start = nextVol[i],
+                    end = nextVol[i + 1],
+                    strokeWidth = 2.5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+
+            // 下潜深度：0 -> peak -> 0（parabola）
+            val dive = (0..steps).map { i ->
+                val t = i / steps.toFloat()
+                val v = 4 * t * (1 - t) * 0.7f
+                Offset(xOf(t), yOf(v))
+            }
+            val dashEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f), 0f)
+            for (i in 0 until dive.size - 1) {
+                drawLine(
+                    color = Color(0xFF4A90D9),
+                    start = dive[i],
+                    end = dive[i + 1],
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    pathEffect = dashEffect
+                )
+            }
+
+            // 混响湿度：0 -> peak -> 0（shifted parabola）
+            val reverb = (0..steps).map { i ->
+                val t = i / steps.toFloat()
+                val v = 4 * t * (1 - t) * 0.5f
+                Offset(xOf(t), yOf(v))
+            }
+            for (i in 0 until reverb.size - 1) {
+                drawLine(
+                    color = Color(0xFFE74C3C),
+                    start = reverb[i],
+                    end = reverb[i + 1],
+                    strokeWidth = 2.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    pathEffect = dashEffect
+                )
+            }
+
+            // X 轴标签
+            val labelPaint = android.text.TextPaint().apply {
+                color = android.graphics.Color.GRAY
+                textSize = 10.sp.toPx()
+                textAlign = android.graphics.Paint.Align.CENTER
+            }
+            val times = listOf("0s" to 0f, "2.5s" to 0.25f, "5s" to 0.5f, "7.5s" to 0.75f, "10s" to 1f)
+            for ((text, t) in times) {
+                val x = xOf(t)
+                drawContext.canvas.nativeCanvas.drawText(text, x, height - 6.dp.toPx(), labelPaint)
+            }
+
+            // Y 轴标签
+            val yLabels = listOf("0" to 0f, "0.5" to 0.5f, "1.0" to 1f)
+            labelPaint.textAlign = android.graphics.Paint.Align.RIGHT
+            for ((text, v) in yLabels) {
+                val y = yOf(v)
+                drawContext.canvas.nativeCanvas.drawText(text, padLeft - 6.dp.toPx(), y + 4.dp.toPx(), labelPaint)
+            }
+        }
     }
 }

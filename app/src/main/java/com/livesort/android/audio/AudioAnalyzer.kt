@@ -51,7 +51,10 @@ class AudioAnalyzer(private val context: Context) {
                 Log.w("AudioAnalyzer", "duration <= 0, skip: $filePath")
                 return@withContext null
             }
-            val (origSampleRate, fullSamples) = decodeAudio(uri, filePath, durationSec)
+            // 限制解码时长：分析最多只需要前90秒（覆盖main 30s + start 15s + end 15s + tail 40s在90s内的情况）
+            // 对于超长歌曲，尾部分析用解码到的最后部分代替，精度损失可接受
+            val decodeCapSec = min(durationSec, 90.0)
+            val (origSampleRate, fullSamples) = decodeAudio(uri, filePath, decodeCapSec)
             if (fullSamples.isEmpty()) return@withContext null
 
             val samples = if (origSampleRate != targetSampleRate) {

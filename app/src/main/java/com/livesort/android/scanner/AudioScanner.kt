@@ -191,7 +191,14 @@ object AudioScanner {
     fun extractCoverFromUri(context: Context, uri: Uri): String? {
         return try {
             val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(context, uri)
+            try {
+                retriever.setDataSource(context, uri)
+            } catch (e: Exception) {
+                // Fallback: try file descriptor for SAF URIs
+                context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    retriever.setDataSource(pfd.fileDescriptor)
+                } ?: throw e
+            }
             val art = retriever.embeddedPicture
             retriever.release()
             if (art != null) {
@@ -210,8 +217,10 @@ object AudioScanner {
         val id = getLong(getColumnIndexOrThrow(MediaStore.Audio.Media._ID))
         val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI.buildUpon().appendPath(id.toString()).build()
         val albumId = getLong(MediaStore.Audio.Media.ALBUM_ID)
-        val coverUri = if (albumId != 0L) "content://media/external/audio/albumart/$albumId" else null
-        val coverPath = coverUri ?: extractCoverFromUri(context, uri)
+        val coverUri = if (albumId != 0L) {
+            Uri.parse("content://media/external/audio/albumart/$albumId")
+        } else null
+        val coverPath = coverUri?.toString() ?: extractCoverFromUri(context, uri)
         return AudioFile(
             uri = uri,
             displayName = getString(MediaStore.Audio.Media.DISPLAY_NAME) ?: "",
