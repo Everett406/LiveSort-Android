@@ -1,6 +1,5 @@
 plugins {
-    // Root project does not apply plugins directly
+    id("com.android.application").apply(false)
+    id("com.android.library").apply(false)
+    kotlin("android").apply(false)
 }
-
-// Note: repositories are managed in settings.gradle.kts via dependencyResolutionManagement
-// Do not declare repositories here to avoid conflicts with settings-managed repositories

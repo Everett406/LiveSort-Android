@@ -40,11 +40,11 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run lint
-        run: ./gradlew :androidApp:lintDebug --no-daemon
+        run: ./gradlew :app:lintDebug --no-daemon
         continue-on-error: true
 
       - name: Build Debug APK
-        run: ./gradlew :androidApp:assembleDebug --no-daemon
+        run: ./gradlew :app:assembleDebug --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4

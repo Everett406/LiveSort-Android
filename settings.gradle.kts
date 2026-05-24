@@ -1,5 +1,3 @@
-rootProject.name = "LiveSort"
-
 pluginManagement {
     repositories {
         google()
@@ -8,28 +6,19 @@ pluginManagement {
         maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
     }
     plugins {
-        val kotlinVersion = extra["kotlin.version"] as String
-        val agpVersion = extra["agp.version"] as String
-        val composeVersion = extra["compose.version"] as String
-
-        kotlin("jvm").version(kotlinVersion)
-        kotlin("multiplatform").version(kotlinVersion)
-        kotlin("android").version(kotlinVersion)
-        id("com.android.application").version(agpVersion)
-        id("com.android.library").version(agpVersion)
-        id("org.jetbrains.compose").version(composeVersion)
+        kotlin("android").version("1.9.25")
+        id("com.android.application").version("8.7.2")
+        id("com.android.library").version("8.7.2")
     }
 }
-
 dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
         mavenCentral()
-        maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
         maven("https://mvn.0110.be/releases")
+        maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
     }
 }
-
-include(":shared")
-include(":androidApp")
-include(":desktopApp")
+rootProject.name = "LiveSort"
+include(":app")
