@@ -51,15 +51,21 @@ class AudioAnalyzer(private val context: Context) {
             }
             val sr = targetSampleRate
 
-            val mainSamples = samples.take((min(30.0, durationSec) * sr).toInt())
-            val startSamples = samples.take((min(15.0, durationSec) * sr).toInt())
-            val endStartIdx = max(0, samples.size - (min(15.0, durationSec) * sr).toInt())
-            val endSamples = samples.drop(endStartIdx)
-            val tailScanStartIdx = max(0, samples.size - (min(40.0, durationSec) * sr).toInt())
-            val tailScanSamples = samples.drop(tailScanStartIdx)
+            val mainCount = min((min(30.0, durationSec) * sr).toInt(), samples.size)
+            val mainSamples = samples.copyOfRange(0, mainCount)
+            val startCount = min((min(15.0, durationSec) * sr).toInt(), samples.size)
+            val startSamples = samples.copyOfRange(0, startCount)
+            val endCount = (min(15.0, durationSec) * sr).toInt()
+            val endStartIdx = max(0, samples.size - endCount)
+            val endSamples = samples.copyOfRange(endStartIdx, samples.size)
+            val tailCount = (min(40.0, durationSec) * sr).toInt()
+            val tailScanStartIdx = max(0, samples.size - tailCount)
+            val tailScanSamples = samples.copyOfRange(tailScanStartIdx, samples.size)
 
-            val start10sSamples = startSamples.take(sr * 10)
-            val end10sSamples = endSamples.takeLast(sr * 10)
+            val start10sCount = min(sr * 10, startSamples.size)
+            val start10sSamples = startSamples.copyOfRange(0, start10sCount)
+            val end10sStart = max(0, endSamples.size - sr * 10)
+            val end10sSamples = endSamples.copyOfRange(end10sStart, endSamples.size)
 
             val bpm = estimateBpm(mainSamples, sr)
             val startBpm = estimateBpm(startSamples, sr)
@@ -79,11 +85,14 @@ class AudioAnalyzer(private val context: Context) {
             val effectiveTailSamples = (sr * invalidTailSec).toInt()
 
             val endDynamicSamples = if (effectiveTailSamples > 0 && tailScanSamples.size > effectiveTailSamples) {
-                tailScanSamples.dropLast(effectiveTailSamples).takeLast(dynamicWindowSamples)
+                val from = max(0, tailScanSamples.size - effectiveTailSamples - dynamicWindowSamples)
+                val to = tailScanSamples.size - effectiveTailSamples
+                tailScanSamples.copyOfRange(from, to)
             } else {
-                tailScanSamples.takeLast(dynamicWindowSamples)
+                val from = max(0, tailScanSamples.size - dynamicWindowSamples)
+                tailScanSamples.copyOfRange(from, tailScanSamples.size)
             }
-            val startDynamicSamples = startSamples.take(dynamicWindowSamples)
+            val startDynamicSamples = startSamples.copyOfRange(0, min(dynamicWindowSamples, startSamples.size))
 
             val startDynamicEnergy = computeRmsEnergy(startDynamicSamples)
             val endDynamicEnergy = computeRmsEnergy(endDynamicSamples)
