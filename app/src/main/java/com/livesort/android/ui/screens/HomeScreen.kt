@@ -35,7 +35,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,11 +47,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.platform.LocalContext
 import com.livesort.android.scanner.AudioScanner
 import com.livesort.android.ui.components.EmotionChart
 import com.livesort.android.audio.AudioAnalyzer
 import com.livesort.android.model.Song
 import com.livesort.android.sorting.InterestCurve
+import com.livesort.android.util.CrashReporter
 import com.livesort.android.viewmodel.PlaylistViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -77,6 +82,10 @@ fun HomeScreen(
         }
     }
 
+    val context = LocalContext.current
+    val hasCrash by remember { mutableStateOf(CrashReporter.hasCrashLog(context)) }
+    var showCrashDialog by remember { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -87,6 +96,29 @@ fun HomeScreen(
             modifier = Modifier.align(Alignment.CenterHorizontally)
         )
         Spacer(modifier = Modifier.height(16.dp))
+
+        if (hasCrash) {
+            CrashLogCard(
+                onView = { showCrashDialog = true },
+                onCopy = {
+                    val log = CrashReporter.getCrashLog(context) + "\n\n--- Logcat ---\n" + CrashReporter.getLogcat(context)
+                    CrashReporter.copyToClipboard(context, log)
+                },
+                onClear = {
+                    CrashReporter.clearCrashLog(context)
+                }
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+
+        if (showCrashDialog) {
+            val logText = remember { CrashReporter.getCrashLog(context) + "\n\n--- Logcat ---\n" + CrashReporter.getLogcat(context) }
+            CrashLogDialog(
+                log = logText,
+                onDismiss = { showCrashDialog = false },
+                onCopy = { CrashReporter.copyToClipboard(context, logText) }
+            )
+        }
 
         // Header
         Row(
@@ -426,6 +458,126 @@ private fun EmptyState(onImportClick: () -> Unit) {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text("导入文件夹")
+        }
+    }
+}
+
+
+@Composable
+private fun CrashLogCard(
+    onView: () -> Unit,
+    onCopy: () -> Unit,
+    onClear: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp)
+        ) {
+            Text(
+                text = "检测到上次崩溃",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onView,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("查看日志", fontSize = 12.sp)
+                }
+                Button(
+                    onClick = onCopy,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.15f),
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                ) {
+                    Text("复制", fontSize = 12.sp)
+                }
+                Button(
+                    onClick = onClear,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.15f),
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                ) {
+                    Text("清除", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CrashLogDialog(
+    log: String,
+    onDismiss: () -> Unit,
+    onCopy: () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(500.dp),
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp)
+            ) {
+                Text(
+                    text = "崩溃日志",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val scrollState = androidx.compose.foundation.rememberScrollState()
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    Text(
+                        text = log,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(scrollState)
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onCopy,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("复制全部")
+                    }
+                    Button(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Text("关闭")
+                    }
+                }
+            }
         }
     }
 }
