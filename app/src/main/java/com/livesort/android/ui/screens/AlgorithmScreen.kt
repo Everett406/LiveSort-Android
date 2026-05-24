@@ -28,6 +28,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -267,6 +269,7 @@ private fun ChartLegend(label: String, color: Color, isDashed: Boolean) {
 
 @Composable
 private fun CrossfadeChart(modifier: Modifier = Modifier) {
+    val bgColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
     Box(modifier = modifier) {
         Canvas(modifier = Modifier.matchParentSize()) {
             val width = size.width
@@ -279,7 +282,7 @@ private fun CrossfadeChart(modifier: Modifier = Modifier) {
             val chartH = height - padTop - padBottom
 
             // 背景
-            drawRect(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            drawRect(color = bgColor)
 
             // 网格线
             val gridY = listOf(0.25f, 0.5f, 0.75f)
@@ -368,24 +371,25 @@ private fun CrossfadeChart(modifier: Modifier = Modifier) {
                 )
             }
 
-            // X 轴标签
+            // X/Y 轴标签
             val labelPaint = android.text.TextPaint().apply {
                 color = android.graphics.Color.GRAY
                 textSize = 10.sp.toPx()
                 textAlign = android.graphics.Paint.Align.CENTER
             }
-            val times = listOf("0s" to 0f, "2.5s" to 0.25f, "5s" to 0.5f, "7.5s" to 0.75f, "10s" to 1f)
-            for ((text, t) in times) {
-                val x = xOf(t)
-                drawContext.canvas.nativeCanvas.drawText(text, x, height - 6.dp.toPx(), labelPaint)
-            }
-
-            // Y 轴标签
-            val yLabels = listOf("0" to 0f, "0.5" to 0.5f, "1.0" to 1f)
-            labelPaint.textAlign = android.graphics.Paint.Align.RIGHT
-            for ((text, v) in yLabels) {
-                val y = yOf(v)
-                drawContext.canvas.nativeCanvas.drawText(text, padLeft - 6.dp.toPx(), y + 4.dp.toPx(), labelPaint)
+            drawIntoCanvas { canvas ->
+                val nativeCanvas = canvas.nativeCanvas
+                val times = listOf("0s" to 0f, "2.5s" to 0.25f, "5s" to 0.5f, "7.5s" to 0.75f, "10s" to 1f)
+                for ((text, t) in times) {
+                    val x = xOf(t)
+                    nativeCanvas.drawText(text, x, height - 6.dp.toPx(), labelPaint)
+                }
+                val yLabels = listOf("0" to 0f, "0.5" to 0.5f, "1.0" to 1f)
+                labelPaint.textAlign = android.graphics.Paint.Align.RIGHT
+                for ((text, v) in yLabels) {
+                    val y = yOf(v)
+                    nativeCanvas.drawText(text, padLeft - 6.dp.toPx(), y + 4.dp.toPx(), labelPaint)
+                }
             }
         }
     }

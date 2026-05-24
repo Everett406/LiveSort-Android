@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.livesort.android.model.Song
 import com.livesort.android.player.CrossfadePlayer
 import com.livesort.android.scanner.AudioFolder
 import com.livesort.android.scanner.AudioScanner
