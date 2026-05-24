@@ -11,7 +11,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -25,6 +24,7 @@ import com.livesort.android.ui.theme.OrangeSoft
  * 情绪曲线图表
  *
  * 绘制理想曲线（虚线）与实际曲线（实线）的对比
+ * 使用平滑的三次贝塞尔曲线（对齐原作者 Chart.js 效果）
  */
 @Composable
 fun EmotionChart(
@@ -55,13 +55,18 @@ fun EmotionChart(
 
             val maxValue = 100.0
 
-            // 绘制理想曲线（虚线）
-            val idealPath = Path()
-            idealCurve.forEachIndexed { index, value ->
+            // 计算点坐标
+            fun point(index: Int, value: Double): Offset {
                 val x = paddingHorizontal + (index.toFloat() / (idealCurve.size - 1).coerceAtLeast(1)) * chartWidth
                 val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)
-                if (index == 0) idealPath.moveTo(x, y) else idealPath.lineTo(x, y)
+                return Offset(x, y)
             }
+
+            val idealPoints = idealCurve.mapIndexed { i, v -> point(i, v) }
+            val actualPoints = actualCurve.mapIndexed { i, v -> point(i, v) }
+
+            // 绘制理想曲线（虚线）
+            val idealPath = createSmoothPath(idealPoints)
             drawPath(
                 path = idealPath,
                 color = onSurfaceVariant.copy(alpha = 0.4f),
@@ -69,18 +74,15 @@ fun EmotionChart(
             )
 
             // 绘制实际曲线（实线 + 渐变填充）
-            val actualPath = Path()
-            actualCurve.forEachIndexed { index, value ->
-                val x = paddingHorizontal + (index.toFloat() / (actualCurve.size - 1).coerceAtLeast(1)) * chartWidth
-                val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)
-                if (index == 0) actualPath.moveTo(x, y) else actualPath.lineTo(x, y)
-            }
+            val actualPath = createSmoothPath(actualPoints)
 
             // 闭合路径用于填充
             val fillPath = Path().apply {
                 addPath(actualPath)
-                lineTo(paddingHorizontal + chartWidth, paddingVertical + chartHeight)
-                lineTo(paddingHorizontal, paddingVertical + chartHeight)
+                val last = actualPoints.last()
+                val first = actualPoints.first()
+                lineTo(last.x, paddingVertical + chartHeight)
+                lineTo(first.x, paddingVertical + chartHeight)
                 close()
             }
 
@@ -103,18 +105,16 @@ fun EmotionChart(
             )
 
             // 绘制数据点
-            actualCurve.forEachIndexed { index, value ->
-                val x = paddingHorizontal + (index.toFloat() / (actualCurve.size - 1).coerceAtLeast(1)) * chartWidth
-                val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)
+            actualPoints.forEach { p ->
                 drawCircle(
                     color = OrangePrimary,
                     radius = 4.dp.toPx(),
-                    center = Offset(x, y)
+                    center = p
                 )
                 drawCircle(
                     color = Color.White,
                     radius = 2.dp.toPx(),
-                    center = Offset(x, y)
+                    center = p
                 )
             }
         }

@@ -7,6 +7,8 @@ import android.os.Looper
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import com.livesort.android.audio.dsp.ReverbAudioProcessor
+import com.livesort.android.audio.dsp.ToneAudioProcessor
 import com.livesort.android.model.Song
 import java.io.File
 import kotlin.math.cos
@@ -24,11 +26,16 @@ import kotlinx.coroutines.flow.asStateFlow
  * - 自适应 Mix Entry（根据 BPM 差、响度差、尾部活跃度动态调整）
  * - 动态过渡 Profile（根据前后歌曲响度差异调整）
  * - 复杂 Crossfade 音量曲线（cosine fade + duck + shape + dynamic profile）
+ * - Tone 效果（lowShelf + highShelf + lowPass BiquadFilter）
+ * - 混响效果（Schroeder Reverb）
  */
 class CrossfadePlayer(context: Context) {
 
-    private val playerA: ExoPlayer = ExoPlayer.Builder(context).build()
-    private val playerB: ExoPlayer = ExoPlayer.Builder(context).build()
+    private val renderersFactoryA = CustomRenderersFactory(context)
+    private val renderersFactoryB = CustomRenderersFactory(context)
+
+    private val playerA: ExoPlayer = ExoPlayer.Builder(context, renderersFactoryA).build()
+    private val playerB: ExoPlayer = ExoPlayer.Builder(context, renderersFactoryB).build()
 
     private var currentPlayer: ExoPlayer = playerA
     private var nextPlayer: ExoPlayer = playerB
@@ -72,9 +79,7 @@ class CrossfadePlayer(context: Context) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
-                    if (currentPlayer == playerA || currentPlayer == playerB) {
-                        _durationMs.value = currentPlayer.duration.coerceAtLeast(0)
-                    }
+                    _durationMs.value = currentPlayer.duration.coerceAtLeast(0)
                 }
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -110,6 +115,10 @@ class CrossfadePlayer(context: Context) {
         currentPlayer.prepare()
         currentPlayer.play()
         currentPlayer.volume = BASE_VOL
+
+        // 重置效果
+        setTone(currentPlayer, 0.0)
+        setReverb(currentPlayer, 0.0)
 
         _isPlaying.value = true
         _isTransitioning.value = false
@@ -201,6 +210,10 @@ class CrossfadePlayer(context: Context) {
 
         setTrackOutputLevel(incomingPlayer, initialState.incomingVolume)
         setTrackOutputLevel(outgoingPlayer, initialState.outgoingVolume)
+        setTone(outgoingPlayer, initialState.outgoingDepth)
+        setTone(incomingPlayer, initialState.incomingDepth)
+        setReverb(outgoingPlayer, initialState.outgoingReverb)
+        setReverb(incomingPlayer, initialState.incomingReverb)
 
         val temp = currentPlayer
         currentPlayer = incomingPlayer
@@ -222,6 +235,10 @@ class CrossfadePlayer(context: Context) {
 
                 setTrackOutputLevel(outgoingPlayer, state.outgoingVolume)
                 setTrackOutputLevel(incomingPlayer, state.incomingVolume)
+                setTone(outgoingPlayer, state.outgoingDepth)
+                setTone(incomingPlayer, state.incomingDepth)
+                setReverb(outgoingPlayer, state.outgoingReverb)
+                setReverb(incomingPlayer, state.incomingReverb)
 
                 if (currentStep >= totalSteps) {
                     finishCrossfade(outgoingPlayer, incomingPlayer)
@@ -238,6 +255,10 @@ class CrossfadePlayer(context: Context) {
         outgoingPlayer.clearMediaItems()
         setTrackOutputLevel(outgoingPlayer, 0.0)
         setTrackOutputLevel(incomingPlayer, BASE_VOL.toDouble())
+        setTone(outgoingPlayer, 0.0)
+        setTone(incomingPlayer, 0.0)
+        setReverb(outgoingPlayer, 0.0)
+        setReverb(incomingPlayer, 0.0)
 
         _isTransitioning.value = false
         fadeRunnable = null
@@ -249,9 +270,31 @@ class CrossfadePlayer(context: Context) {
         _isTransitioning.value = false
     }
 
+    // --- Volume / Tone / Reverb Control ---
+
     private fun setTrackOutputLevel(player: ExoPlayer, level: Double) {
         val safeLevel = min(1.0, max(0.0, level)).toFloat()
         player.volume = safeLevel
+    }
+
+    private fun setTone(player: ExoPlayer, depth: Double) {
+        val factory = when (player) {
+            playerA -> renderersFactoryA
+            playerB -> renderersFactoryB
+            else -> return
+        }
+        val safeDepth = min(1.0, max(0.0, depth))
+        factory.toneProcessor.setParams(ToneAudioProcessor.Params(depth = safeDepth))
+    }
+
+    private fun setReverb(player: ExoPlayer, wetness: Double) {
+        val factory = when (player) {
+            playerA -> renderersFactoryA
+            playerB -> renderersFactoryB
+            else -> return
+        }
+        val safeWet = min(0.5, max(0.0, wetness))
+        factory.reverbProcessor.setParams(ReverbAudioProcessor.Params(wetness = safeWet))
     }
 
     // --- Mix Parameter Helpers (aligned with original author) ---
@@ -478,8 +521,6 @@ class CrossfadePlayer(context: Context) {
         )
     }
 
-    // --- Math Helpers ---
-
     private fun easeInOutCubic(value: Double): Double {
         val safe = min(1.0, max(0.0, value))
         return if (safe < 0.5) {
@@ -489,8 +530,6 @@ class CrossfadePlayer(context: Context) {
         }
     }
 
-    // --- URI Resolution ---
-
     private fun resolveUri(path: String): Uri {
         return when {
             path.startsWith("content://") || path.startsWith("file://") -> Uri.parse(path)
@@ -498,8 +537,6 @@ class CrossfadePlayer(context: Context) {
             else -> Uri.parse(path)
         }
     }
-
-    // --- Release ---
 
     fun release() {
         stopProgressTracking()

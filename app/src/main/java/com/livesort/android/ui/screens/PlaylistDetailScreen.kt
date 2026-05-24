@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.livesort.android.model.Song
 import com.livesort.android.sorting.InterestCurve
+import com.livesort.android.ui.components.createSmoothPath
 import com.livesort.android.ui.theme.OrangePrimary
 import com.livesort.android.ui.theme.OrangeSoft
 
@@ -194,31 +195,32 @@ private fun LargeEmotionChart(
             }
 
             // 绘制理想曲线（虚线）
-            val idealPath = Path()
-            idealCurve.forEachIndexed { index, value ->
+            val idealPoints = idealCurve.mapIndexed { index, value ->
                 val x = paddingHorizontal + (index.toFloat() / (idealCurve.size - 1).coerceAtLeast(1)) * chartWidth
                 val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)
-                if (index == 0) idealPath.moveTo(x, y) else idealPath.lineTo(x, y)
+                Offset(x, y)
             }
+            val idealPath = createSmoothPath(idealPoints)
             drawPath(
                 path = idealPath,
                 color = onSurfaceVariant.copy(alpha = 0.5f),
                 style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
             )
 
-            // 绘制实际曲线（实线 + 渐变填充）
-            val actualPath = Path()
-            actualCurve.forEachIndexed { index, value ->
+            val actualPoints = actualCurve.mapIndexed { index, value ->
                 val x = paddingHorizontal + (index.toFloat() / (actualCurve.size - 1).coerceAtLeast(1)) * chartWidth
                 val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)
-                if (index == 0) actualPath.moveTo(x, y) else actualPath.lineTo(x, y)
+                Offset(x, y)
             }
+            val actualPath = createSmoothPath(actualPoints)
 
             // 闭合路径用于填充
             val fillPath = Path().apply {
                 addPath(actualPath)
-                lineTo(paddingHorizontal + chartWidth, paddingVertical + chartHeight)
-                lineTo(paddingHorizontal, paddingVertical + chartHeight)
+                val last = actualPoints.last()
+                val first = actualPoints.first()
+                lineTo(last.x, paddingVertical + chartHeight)
+                lineTo(first.x, paddingVertical + chartHeight)
                 close()
             }
 
@@ -241,18 +243,16 @@ private fun LargeEmotionChart(
             )
 
             // 绘制数据点
-            actualCurve.forEachIndexed { index, value ->
-                val x = paddingHorizontal + (index.toFloat() / (actualCurve.size - 1).coerceAtLeast(1)) * chartWidth
-                val y = paddingVertical + chartHeight - ((value / maxValue).toFloat() * chartHeight)
+            actualPoints.forEach { p ->
                 drawCircle(
                     color = OrangePrimary,
                     radius = 5.dp.toPx(),
-                    center = Offset(x, y)
+                    center = p
                 )
                 drawCircle(
                     color = Color.White,
                     radius = 2.5.dp.toPx(),
-                    center = Offset(x, y)
+                    center = p
                 )
             }
         }
