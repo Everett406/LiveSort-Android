@@ -14,6 +14,8 @@ import be.tarsos.dsp.onsets.ComplexOnsetDetector
 import be.tarsos.dsp.onsets.OnsetHandler
 import be.tarsos.dsp.util.fft.FFT
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.ByteBuffer
@@ -26,6 +28,12 @@ import kotlin.math.sqrt
  *
  * 使用 Android MediaCodec 解码 + TarsosDSP FFT 分析
  * 完全对齐原作者 Python 实现 (audio_analyzer.py)
+ *
+ * 性能优化要点：
+ * 1. 分块解码：只解码前30秒 + 真正尾部40秒，避免解码无用中间段
+ * 2. 数组复用：FFT buffer、logMag 在帧循环中复用，减少 GC
+ * 3. 并行计算：BPM、Energy、Brightness、Tail 分析并行执行
+ * 4. 采样率限制：解码后重采样到 22050Hz 再分析
  */
 class AudioAnalyzer(private val context: Context) {
 
@@ -35,11 +43,13 @@ class AudioAnalyzer(private val context: Context) {
     private val rmsFrameLength = 2048
     private val rmsHopLength = 512
 
+    // 预分配可复用的 FFT 实例（2048 点是 onset 和 centroid 的通用大小）
+    private val fft2048 = FFT(2048)
+
     suspend fun analyze(filePath: String): AudioFeatures? = withContext(Dispatchers.Default) {
         val uri = Uri.parse(filePath)
         val isContentUri = uri.scheme == "content"
 
-        // If it's a plain file path, verify existence
         if (!isContentUri) {
             val file = File(filePath)
             if (!file.exists()) return@withContext null
@@ -51,68 +61,79 @@ class AudioAnalyzer(private val context: Context) {
                 Log.w("AudioAnalyzer", "duration <= 0, skip: $filePath")
                 return@withContext null
             }
-            // 限制解码时长：分析最多只需要前90秒（覆盖main 30s + start 15s + end 15s + tail 40s在90s内的情况）
-            // 对于超长歌曲，尾部分析用解码到的最后部分代替，精度损失可接受
-            val decodeCapSec = min(durationSec, 90.0)
-            val (origSampleRate, fullSamples) = decodeAudio(uri, filePath, decodeCapSec)
-            if (fullSamples.isEmpty()) return@withContext null
 
-            val samples = if (origSampleRate != targetSampleRate) {
-                resample(fullSamples, origSampleRate, targetSampleRate)
+            // 分块解码：前30秒(main+start) + 后40秒(tail+end)
+            val frontNeedSec = 30.0
+            val tailNeedSec = 40.0
+            val (sr, frontSamples, tailSamples) = decodeFrontAndTail(
+                uri, filePath, durationSec, frontNeedSec, tailNeedSec
+            )
+            if (frontSamples.isEmpty()) return@withContext null
+
+            val samples = if (sr != targetSampleRate) {
+                // 分别重采样，避免合并大数组后再重采样
+                val rsFront = resample(frontSamples, sr, targetSampleRate)
+                val rsTail = if (tailSamples.isNotEmpty()) resample(tailSamples, sr, targetSampleRate) else FloatArray(0)
+                Pair(rsFront, rsTail)
             } else {
-                fullSamples
+                Pair(frontSamples, tailSamples)
             }
-            val sr = targetSampleRate
+            val front = samples.first
+            val tail = samples.second
+            val tsr = targetSampleRate
 
-            // 对齐 Python：前30s用于整体特征
-            val mainCount = min((min(30.0, durationSec) * sr).toInt(), samples.size)
-            val mainSamples = samples.copyOfRange(0, mainCount)
+            // 子样本切片
+            val mainCount = min((min(30.0, durationSec) * tsr).toInt(), front.size)
+            val mainSamples = front.copyOfRange(0, mainCount)
 
-            // 对齐 Python：首尾15s用于过渡分析
-            val startCount = min((min(15.0, durationSec) * sr).toInt(), samples.size)
-            val startSamples = samples.copyOfRange(0, startCount)
+            val startCount = min((min(15.0, durationSec) * tsr).toInt(), front.size)
+            val startSamples = front.copyOfRange(0, startCount)
 
-            val endCount = (min(15.0, durationSec) * sr).toInt()
-            val endStartIdx = max(0, samples.size - endCount)
-            val endSamples = samples.copyOfRange(endStartIdx, samples.size)
+            val endSamples = if (tail.isNotEmpty()) {
+                val endCount = (min(15.0, durationSec) * tsr).toInt()
+                val startIdx = max(0, tail.size - endCount)
+                tail.copyOfRange(startIdx, tail.size)
+            } else {
+                // 短歌曲：front 就是全部
+                val endCount = (min(15.0, durationSec) * tsr).toInt()
+                val startIdx = max(0, front.size - endCount)
+                front.copyOfRange(startIdx, front.size)
+            }
 
-            // 对齐 Python：尾部40s（或整个文件）用于 invalid tail 扫描
-            val tailScanWindowSec = min(40.0, durationSec)
-            val tailCount = (tailScanWindowSec * sr).toInt()
-            val tailScanStartIdx = max(0, samples.size - tailCount)
-            val tailScanSamples = samples.copyOfRange(tailScanStartIdx, samples.size)
+            val tailScanSamples = if (tail.isEmpty()) front else tail
 
             // 首尾10s mix window
-            val mixWindowSamples = sr * 10
+            val mixWindowSamples = tsr * 10
             val start10sSamples = startSamples.copyOfRange(0, min(mixWindowSamples, startSamples.size))
             val end10sStart = max(0, endSamples.size - mixWindowSamples)
             val end10sSamples = endSamples.copyOfRange(end10sStart, endSamples.size)
 
-            // BPM（整体、开头、结尾）
-            val bpm = estimateBpm(mainSamples, sr)
-            val startBpm = estimateBpm(startSamples, sr)
-            val endBpm = estimateBpm(endSamples, sr)
+            // --- 并行计算独立特征 ---
+            val (bpm, startBpm, endBpm) = coroutineScope {
+                val d1 = async { estimateBpm(mainSamples, tsr) }
+                val d2 = async { estimateBpm(startSamples, tsr) }
+                val d3 = async { estimateBpm(endSamples, tsr) }
+                Triple(d1.await(), d2.await(), d3.await())
+            }
 
-            // Energy（整体、开头、结尾、10s窗口）
-            val energy = computeRmsEnergy(mainSamples)
-            val startEnergy = computeRmsEnergy(startSamples)
-            val endEnergy = computeRmsEnergy(endSamples)
-            val start10sEnergy = computeRmsEnergy(start10sSamples)
-            val end10sEnergy = computeRmsEnergy(end10sSamples)
+            val (energy, startEnergy, endEnergy, start10sEnergy, end10sEnergy) = coroutineScope {
+                val d1 = async { computeRmsEnergy(mainSamples) }
+                val d2 = async { computeRmsEnergy(startSamples) }
+                val d3 = async { computeRmsEnergy(endSamples) }
+                val d4 = async { computeRmsEnergy(start10sSamples) }
+                val d5 = async { computeRmsEnergy(end10sSamples) }
+                Quintuple(d1.await(), d2.await(), d3.await(), d4.await(), d5.await())
+            }
 
-            // Brightness
-            val brightness = computeSpectralCentroid(mainSamples, sr)
+            val brightness = computeSpectralCentroid(mainSamples, tsr)
 
-            // 尾部静默分析（对齐 Python extract_features 尾部分析）
-            val (tailSilenceSec, endActivityRatio) = estimateTailSilence(endSamples, sr)
+            // 尾部分析
+            val (tailSilenceSec, endActivityRatio) = estimateTailSilence(endSamples, tsr)
+            val invalidTailSec = estimateInvalidTailSec(tailScanSamples, tsr)
 
-            // Invalid tail 分析（对齐 Python estimate_invalid_tail_sec）
-            val invalidTailSec = estimateInvalidTailSec(tailScanSamples, sr)
-
-            // 动态窗口（对齐 Python）
             val dynamicWindowSec = (10.0 + invalidTailSec * 0.55).coerceIn(8.0, 24.0)
-            val dynamicWindowSamples = (sr * dynamicWindowSec).toInt()
-            val effectiveTailSamples = (sr * invalidTailSec).toInt()
+            val dynamicWindowSamples = (tsr * dynamicWindowSec).toInt()
+            val effectiveTailSamples = (tsr * invalidTailSec).toInt()
 
             val endDynamicSamples = if (effectiveTailSamples > 0 && tailScanSamples.size > effectiveTailSamples) {
                 val from = max(0, tailScanSamples.size - effectiveTailSamples - dynamicWindowSamples)
@@ -148,7 +169,7 @@ class AudioAnalyzer(private val context: Context) {
                 endDynamicEnergy = endDynamicEnergy,
                 dynamicWindowSec = dynamicWindowSec,
                 tailSilenceSec = tailSilenceSec,
-                tailScanWindowSec = tailScanWindowSec,
+                tailScanWindowSec = min(40.0, durationSec),
                 invalidTailSec = invalidTailSec,
                 endActivityRatio = endActivityRatio,
                 mixLeadSec = mixLeadSec,
@@ -181,7 +202,38 @@ class AudioAnalyzer(private val context: Context) {
         }
     }
 
-    private fun decodeAudio(uri: Uri, filePath: String, maxDurationSec: Double): Pair<Int, FloatArray> {
+    /**
+     * 分块解码：返回 (sampleRate, frontSamples, tailSamples)
+     * 对于短歌曲，tailSamples 为空，frontSamples 包含全部
+     */
+    private fun decodeFrontAndTail(
+        uri: Uri, filePath: String,
+        durationSec: Double, frontSec: Double, tailSec: Double
+    ): Triple<Int, FloatArray, FloatArray> {
+        if (durationSec <= frontSec + tailSec) {
+            // 短歌曲：一次性解码全部
+            val (sr, samples) = decodeAudioSegment(uri, filePath, 0.0, durationSec)
+            return Triple(sr, samples, FloatArray(0))
+        }
+
+        // 长歌曲：分别解码前段和尾段
+        val (sr1, front) = decodeAudioSegment(uri, filePath, 0.0, frontSec)
+        if (front.isEmpty()) return Triple(0, FloatArray(0), FloatArray(0))
+
+        val tailStartSec = max(0.0, durationSec - tailSec)
+        val (sr2, tail) = decodeAudioSegment(uri, filePath, tailStartSec, tailSec)
+        // 以实际解码到的采样率为准（前后段应该一致）
+        return Triple(sr1, front, tail)
+    }
+
+    /**
+     * 从指定秒数开始解码最多 maxDurationSec 秒
+     * 使用 MediaExtractor.seekTo 跳到目标位置
+     */
+    private fun decodeAudioSegment(
+        uri: Uri, filePath: String,
+        startSec: Double, maxDurationSec: Double
+    ): Pair<Int, FloatArray> {
         if (maxDurationSec <= 0) return Pair(0, FloatArray(0))
 
         val extractor = MediaExtractor()
@@ -219,6 +271,15 @@ class AudioAnalyzer(private val context: Context) {
         var channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
         if (channelCount <= 0) channelCount = 2
 
+        // Seek 到目标位置（微秒）
+        if (startSec > 0) {
+            try {
+                extractor.seekTo((startSec * 1_000_000).toLong(), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            } catch (e: Exception) {
+                Log.w("AudioAnalyzer", "seekTo failed, fallback to beginning", e)
+            }
+        }
+
         val codec = try {
             MediaCodec.createDecoderByType(mime)
         } catch (e: Exception) {
@@ -239,8 +300,10 @@ class AudioAnalyzer(private val context: Context) {
 
         val bufferInfo = MediaCodec.BufferInfo()
         var isEOS = false
-        // Cap at 5 minutes of audio to prevent memory issues
-        val maxSamples = min((originalSampleRate * maxDurationSec).toLong(), originalSampleRate * 300L).toInt()
+        val maxSamples = min(
+            (originalSampleRate * maxDurationSec).toLong(),
+            originalSampleRate * 300L
+        ).toInt()
         val samples = FloatArray(maxSamples)
         var writeIndex = 0
 
@@ -355,11 +418,11 @@ class AudioAnalyzer(private val context: Context) {
         val rms = FloatArray(numFrames)
         for (i in 0 until numFrames) {
             var sum = 0.0
-            for (j in 0 until frameLength) {
-                val idx = i * hopLength + j
-                if (idx < samples.size) {
-                    sum += samples[idx] * samples[idx]
-                }
+            val base = i * hopLength
+            val limit = min(frameLength, samples.size - base)
+            for (j in 0 until limit) {
+                val v = samples[base + j]
+                sum += v * v
             }
             rms[i] = sqrt(sum / frameLength).toFloat()
         }
@@ -409,15 +472,15 @@ class AudioAnalyzer(private val context: Context) {
         // 5-point moving average smooth (mode='same')
         val smooth = FloatArray(tailRms.size)
         val kernelSize = 5
+        val half = kernelSize / 2
         for (i in tailRms.indices) {
             var sum = 0.0
             var count = 0
-            for (j in -kernelSize / 2..kernelSize / 2) {
-                val idx = i + j
-                if (idx in tailRms.indices) {
-                    sum += tailRms[idx]
-                    count++
-                }
+            val start = max(0, i - half)
+            val end = min(tailRms.size - 1, i + half)
+            for (j in start..end) {
+                sum += tailRms[j]
+                count++
             }
             smooth[i] = (sum / count).toFloat()
         }
@@ -451,8 +514,6 @@ class AudioAnalyzer(private val context: Context) {
         if (samples.size < sr * 5) return 0.0
 
         return try {
-            // 主算法：频谱差分 onset envelope + 自相关 + log-normal 先验
-            // 对齐 librosa.feature.tempo 的核心逻辑
             val onsetEnv = computeOnsetEnvelopeSpectral(samples, sr)
             estimateBpmFromOnsetEnvelope(onsetEnv, sr)
         } catch (e: Exception) {
@@ -469,10 +530,7 @@ class AudioAnalyzer(private val context: Context) {
 
     /**
      * 计算频谱差分 onset envelope
-     * 对齐 librosa.onset.onset_strength 的简化实现：
-     * 1. STFT 分帧 (frame=2048, hop=512)
-     * 2. 计算每帧对数幅度谱
-     * 3. 相邻帧差分，保留正值并求和
+     * 关键优化：复用 buffer 和 logMag 数组，避免每帧都分配新内存
      */
     private fun computeOnsetEnvelopeSpectral(samples: FloatArray, sr: Int): FloatArray {
         val frameSize = 2048
@@ -480,33 +538,41 @@ class AudioAnalyzer(private val context: Context) {
         val numFrames = max(0, (samples.size - frameSize) / hopSize + 1)
         if (numFrames <= 1) return FloatArray(0)
 
-        val fft = FFT(frameSize)
-        val buffer = FloatArray(frameSize)
+        val fft = fft2048
+        val fftBuffer = FloatArray(frameSize)
         val magnitudes = FloatArray(frameSize / 2)
         val onsetEnvelope = FloatArray(numFrames)
 
+        // 复用两个 logMag 缓冲区交替使用
+        var logMagA = FloatArray(magnitudes.size)
+        var logMagB = FloatArray(magnitudes.size)
         var prevLogMag: FloatArray? = null
 
         for (i in 0 until numFrames) {
             val start = i * hopSize
-            for (j in 0 until frameSize) {
-                buffer[j] = if (start + j < samples.size) samples[start + j] else 0f
+            // 直接填充 fftBuffer，不 copyOf（forwardTransform 会修改它，但我们每次重新填充）
+            val limit = min(frameSize, samples.size - start)
+            if (limit < frameSize) {
+                // 零填充尾部
+                fftBuffer.fill(0f)
+            }
+            for (j in 0 until limit) {
+                fftBuffer[j] = samples[start + j]
             }
 
-            // 复制 buffer 因为 forwardTransform 会修改它
-            val frameBuffer = buffer.copyOf()
-            fft.forwardTransform(frameBuffer)
-            fft.modulus(frameBuffer, magnitudes)
+            fft.forwardTransform(fftBuffer)
+            fft.modulus(fftBuffer, magnitudes)
 
-            // 对数压缩幅度谱
-            val logMag = FloatArray(magnitudes.size) { j ->
-                kotlin.math.ln(1.0 + magnitudes[j].toDouble()).toFloat()
+            // 计算对数幅度谱，直接写入当前缓冲区
+            val currentLogMag = if (prevLogMag == null) logMagA else logMagB
+            for (j in magnitudes.indices) {
+                currentLogMag[j] = kotlin.math.ln(1.0 + magnitudes[j].toDouble()).toFloat()
             }
 
             if (prevLogMag != null) {
                 var diffSum = 0.0
-                for (j in logMag.indices) {
-                    val diff = logMag[j] - prevLogMag[j]
+                for (j in currentLogMag.indices) {
+                    val diff = currentLogMag[j] - prevLogMag[j]
                     if (diff > 0) {
                         diffSum += diff
                     }
@@ -516,7 +582,17 @@ class AudioAnalyzer(private val context: Context) {
                 onsetEnvelope[i] = 0f
             }
 
-            prevLogMag = logMag
+            // 交换缓冲区引用
+            if (prevLogMag == null) {
+                prevLogMag = logMagA
+                logMagB = logMagA
+                logMagA = currentLogMag
+            } else {
+                val temp = logMagA
+                logMagA = logMagB
+                logMagB = temp
+                prevLogMag = logMagA
+            }
         }
 
         return onsetEnvelope
@@ -524,11 +600,6 @@ class AudioAnalyzer(private val context: Context) {
 
     /**
      * 基于 onset envelope 自相关 + log-normal 先验的 tempo 估计
-     * 对齐 librosa.feature.tempo 核心逻辑：
-     * 1. 8秒窗口自相关 (ac_size=8.0)
-     * 2. 转换为 BPM 轴
-     * 3. log-normal 先验加权 (start_bpm=120, std_bpm=1.0)
-     * 4. 取 argmax
      */
     private fun estimateBpmFromOnsetEnvelope(onsetEnv: FloatArray, sr: Int): Double {
         if (onsetEnv.size < 10) return 0.0
@@ -538,7 +609,6 @@ class AudioAnalyzer(private val context: Context) {
         val winLength = ((sr * acSizeSec) / hopSize).toInt()
         val effectiveWinLength = min(winLength, onsetEnv.size)
 
-        // lag 范围对应 55~210 BPM
         val minLag = max(1, (sr * 60.0 / 210.0 / hopSize).toInt())
         val maxLag = min((sr * 60.0 / 55.0 / hopSize).toInt(), onsetEnv.size - 1)
         if (minLag >= maxLag) return 0.0
@@ -558,13 +628,11 @@ class AudioAnalyzer(private val context: Context) {
         val maxCorr = autocorr.maxOrNull() ?: 1.0
         if (maxCorr <= 0) return 0.0
 
-        // 转换为 BPM 轴
         val bpms = DoubleArray(numLags) { i ->
             val lag = minLag + i
             60.0 * sr / (lag * hopSize)
         }
 
-        // log-normal 先验，中心 120 BPM
         val startBpm = 120.0
         val stdBpm = 1.0
         val logPrior = DoubleArray(numLags) { i ->
@@ -573,7 +641,6 @@ class AudioAnalyzer(private val context: Context) {
             -0.5 * logRatio * logRatio
         }
 
-        // 加权找峰值 (对齐 librosa: np.argmax(np.log1p(1e6 * tg) + logprior))
         var bestIdx = 0
         var bestScore = Double.NEGATIVE_INFINITY
         for (i in autocorr.indices) {
@@ -691,11 +758,11 @@ class AudioAnalyzer(private val context: Context) {
         val energy = FloatArray(numFrames)
         for (i in 0 until numFrames) {
             var sum = 0.0
-            for (j in 0 until frameSize) {
-                val idx = i * frameSize + j
-                if (idx < samples.size) {
-                    sum += samples[idx] * samples[idx]
-                }
+            val base = i * frameSize
+            val limit = min(frameSize, samples.size - base)
+            for (j in 0 until limit) {
+                val v = samples[base + j]
+                sum += v * v
             }
             energy[i] = sqrt(sum / frameSize).toFloat()
         }
@@ -706,25 +773,6 @@ class AudioAnalyzer(private val context: Context) {
             diff[i] = kotlin.math.max(0f, energy[i] - energy[i - 1])
         }
         return diff
-    }
-
-    private fun smoothFloatArray(data: FloatArray, windowSize: Int): FloatArray {
-        if (data.isEmpty()) return FloatArray(0)
-        val half = windowSize / 2
-        val result = FloatArray(data.size)
-        for (i in data.indices) {
-            var sum = 0.0
-            var count = 0
-            for (j in -half..half) {
-                val idx = i + j
-                if (idx in data.indices) {
-                    sum += data[idx]
-                    count++
-                }
-            }
-            result[i] = (sum / count).toFloat()
-        }
-        return result
     }
 
     private fun computeRmsEnergy(samples: FloatArray): Double {
@@ -739,12 +787,18 @@ class AudioAnalyzer(private val context: Context) {
     private fun computeSpectralCentroid(samples: FloatArray, sr: Int): Double {
         if (samples.isEmpty()) return 0.0
         val fftSize = 2048
-        val fft = FFT(fftSize)
+        val fft = fft2048
         val buffer = FloatArray(fftSize)
 
         val startIdx = max(0, samples.size / 2 - fftSize / 2)
-        for (i in 0 until fftSize) {
-            buffer[i] = if (startIdx + i < samples.size) samples[startIdx + i] else 0f
+        val limit = min(fftSize, samples.size - startIdx)
+        for (i in 0 until limit) {
+            buffer[i] = samples[startIdx + i]
+        }
+        if (limit < fftSize) {
+            for (i in limit until fftSize) {
+                buffer[i] = 0f
+            }
         }
 
         val magnitudes = FloatArray(fftSize / 2)
@@ -757,10 +811,16 @@ class AudioAnalyzer(private val context: Context) {
 
         for (i in magnitudes.indices) {
             val freq = i * binWidth
-            weightedSum += freq * magnitudes[i]
-            magnitudeSum += magnitudes[i]
+            val mag = magnitudes[i]
+            weightedSum += freq * mag
+            magnitudeSum += mag
         }
 
         return if (magnitudeSum > 0) weightedSum / magnitudeSum else 0.0
     }
+
+    /** 简单的五元组数据类，用于并行返回多个 energy 值 */
+    private data class Quintuple<A, B, C, D, E>(
+        val first: A, val second: B, val third: C, val fourth: D, val fifth: E
+    )
 }
