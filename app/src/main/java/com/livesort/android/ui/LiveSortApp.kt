@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -103,7 +104,7 @@ fun LiveSortApp() {
                             containerColor = MaterialTheme.colorScheme.background
                         ),
                         actions = {
-                            IconButton(onClick = onImportClick) {
+                            IconButton(onClick = { currentScreen = Screen.FolderPicker }) {
                                 Icon(
                                     imageVector = Icons.Default.Add,
                                     contentDescription = "导入",
