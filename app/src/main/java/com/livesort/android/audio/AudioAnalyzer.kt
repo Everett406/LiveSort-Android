@@ -7,12 +7,6 @@ import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
-import be.tarsos.dsp.AudioEvent
-import be.tarsos.dsp.beatroot.BeatRootOnsetEventHandler
-import be.tarsos.dsp.io.TarsosDSPAudioFormat
-import be.tarsos.dsp.onsets.ComplexOnsetDetector
-import be.tarsos.dsp.onsets.OnsetHandler
-import be.tarsos.dsp.util.fft.FFT
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -26,25 +20,14 @@ import kotlin.math.sqrt
 /**
  * Android 音频分析器实现
  *
- * 使用 Android MediaCodec 解码 + TarsosDSP FFT 分析
- * 完全对齐原作者 Python 实现 (audio_analyzer.py)
- *
- * 性能优化要点：
- * 1. 分块解码：只解码前30秒 + 真正尾部40秒，避免解码无用中间段
- * 2. 数组复用：FFT buffer、logMag 在帧循环中复用，减少 GC
- * 3. 并行计算：BPM、Energy、Brightness、Tail 分析并行执行
- * 4. 采样率限制：解码后重采样到 22050Hz 再分析
+ * 完全对齐原作者 JS 实现 (index.html analyzeLocalAudioFile)
+ * - BPM: 平均绝对值 envelope + 自相关
+ * - Energy: frame RMS 均值
+ * - Brightness: 时域差分/绝对值比
  */
 class AudioAnalyzer(private val context: Context) {
 
     private val targetSampleRate = 22050
-
-    // librosa.feature.rms 默认参数
-    private val rmsFrameLength = 2048
-    private val rmsHopLength = 512
-
-    // 预分配可复用的 FFT 实例（2048 点是 onset 和 centroid 的通用大小）
-    private val fft2048 = FFT(2048)
 
     suspend fun analyze(filePath: String): AudioFeatures? = withContext(Dispatchers.Default) {
         val uri = Uri.parse(filePath)
@@ -71,7 +54,6 @@ class AudioAnalyzer(private val context: Context) {
             if (frontSamples.isEmpty()) return@withContext null
 
             val samples = if (sr != targetSampleRate) {
-                // 分别重采样，避免合并大数组后再重采样
                 val rsFront = resample(frontSamples, sr, targetSampleRate)
                 val rsTail = if (tailSamples.isNotEmpty()) resample(tailSamples, sr, targetSampleRate) else FloatArray(0)
                 Pair(rsFront, rsTail)
@@ -82,7 +64,7 @@ class AudioAnalyzer(private val context: Context) {
             val tail = samples.second
             val tsr = targetSampleRate
 
-            // 子样本切片
+            // 子样本切片（对齐原作者）
             val mainCount = min((min(30.0, durationSec) * tsr).toInt(), front.size)
             val mainSamples = front.copyOfRange(0, mainCount)
 
@@ -94,7 +76,6 @@ class AudioAnalyzer(private val context: Context) {
                 val startIdx = max(0, tail.size - endCount)
                 tail.copyOfRange(startIdx, tail.size)
             } else {
-                // 短歌曲：front 就是全部
                 val endCount = (min(15.0, durationSec) * tsr).toInt()
                 val startIdx = max(0, front.size - endCount)
                 front.copyOfRange(startIdx, front.size)
@@ -117,20 +98,47 @@ class AudioAnalyzer(private val context: Context) {
             }
 
             val (energy, startEnergy, endEnergy, start10sEnergy, end10sEnergy) = coroutineScope {
-                val d1 = async { computeRmsEnergy(mainSamples) }
-                val d2 = async { computeRmsEnergy(startSamples) }
-                val d3 = async { computeRmsEnergy(endSamples) }
-                val d4 = async { computeRmsEnergy(start10sSamples) }
-                val d5 = async { computeRmsEnergy(end10sSamples) }
+                val d1 = async { computeEnergyFromSamples(mainSamples) }
+                val d2 = async { computeEnergyFromSamples(startSamples) }
+                val d3 = async { computeEnergyFromSamples(endSamples) }
+                val d4 = async { computeEnergyFromSamples(start10sSamples) }
+                val d5 = async { computeEnergyFromSamples(end10sSamples) }
                 Quintuple(d1.await(), d2.await(), d3.await(), d4.await(), d5.await())
             }
 
-            val brightness = computeSpectralCentroid(mainSamples, tsr)
+            val brightness = computeBrightnessFromSamples(mainSamples, tsr)
 
-            // 尾部分析
-            val (tailSilenceSec, endActivityRatio) = estimateTailSilence(endSamples, tsr)
-            val invalidTailSec = estimateInvalidTailSec(tailScanSamples, tsr)
+            // 尾部分析（对齐原作者）
+            val frameRms = computeFrameRmsSeries(endSamples, 2048, 512)
+            val peakRms = frameRms.maxOrNull() ?: 0f
+            val activeThreshold = max(peakRms * 0.2f, 1e-4f)
+            var lastActiveIdx = -1
+            for (i in frameRms.indices) {
+                if (frameRms[i] >= activeThreshold) {
+                    lastActiveIdx = i
+                }
+            }
+            val endLenSec = endSamples.size.toDouble() / tsr
+            val lastActiveSec = if (lastActiveIdx >= 0) {
+                lastActiveIdx * 512.0 / tsr
+            } else {
+                0.0
+            }
+            val tailSilenceSec = max(0.0, endLenSec - lastActiveSec)
+            val endActivityRatio = if (endLenSec > 0) {
+                ((endLenSec - tailSilenceSec) / endLenSec).coerceIn(0.0, 1.0)
+            } else {
+                1.0
+            }
 
+            val mixLeadSec = (9.1 + tailSilenceSec * 0.62).coerceIn(7.4, 13.2)
+            val mixBreathSec = (1.75 + tailSilenceSec * 0.22).coerceIn(1.35, 3.2)
+
+            val tailRmsSeries = computeFrameRmsSeries(tailScanSamples, 2048, 512)
+            val invalidTailSec = estimateInvalidTailSecFromRmsSeries(tailRmsSeries, tsr, 512)
+
+            val mixEffectStartSec = (10.0 + invalidTailSec).coerceIn(8.0, 50.0)
+            val mixEntrySec = (4.0 + invalidTailSec).coerceIn(4.0, 44.0)
             val dynamicWindowSec = (10.0 + invalidTailSec * 0.55).coerceIn(8.0, 24.0)
             val dynamicWindowSamples = (tsr * dynamicWindowSec).toInt()
             val effectiveTailSamples = (tsr * invalidTailSec).toInt()
@@ -145,14 +153,8 @@ class AudioAnalyzer(private val context: Context) {
             }
             val startDynamicSamples = startSamples.copyOfRange(0, min(dynamicWindowSamples, startSamples.size))
 
-            val startDynamicEnergy = computeRmsEnergy(startDynamicSamples)
-            val endDynamicEnergy = computeRmsEnergy(endDynamicSamples)
-
-            // Mix 参数（对齐 Python）
-            val mixLeadSec = (9.1 + tailSilenceSec * 0.62).coerceIn(7.4, 13.2)
-            val mixBreathSec = (1.75 + tailSilenceSec * 0.22).coerceIn(1.35, 3.2)
-            val mixEffectStartSec = (10.0 + invalidTailSec).coerceIn(8.0, 50.0)
-            val mixEntrySec = (4.0 + invalidTailSec).coerceIn(4.0, 44.0)
+            val startDynamicEnergy = computeEnergyFromSamples(startDynamicSamples)
+            val endDynamicEnergy = computeEnergyFromSamples(endDynamicSamples)
 
             AudioFeatures(
                 durationSec = durationSec,
@@ -406,417 +408,167 @@ class AudioAnalyzer(private val context: Context) {
         return result
     }
 
-    // --- Feature Extraction ---
+    // --- Feature Extraction (aligned with original author JS) ---
 
     /**
-     * 对齐 librosa.feature.rms：计算帧级 RMS
-     * frame_length=2048, hop_length=512
+     * 对齐原作者 computeFrameRmsSeries
      */
-    private fun computeFrameRms(samples: FloatArray, frameLength: Int = 2048, hopLength: Int = 512): FloatArray {
-        if (samples.isEmpty()) return FloatArray(0)
-        val numFrames = max(1, (samples.size - frameLength) / hopLength + 1)
-        val rms = FloatArray(numFrames)
+    private fun computeFrameRmsSeries(samples: FloatArray, frameSize: Int, hopSize: Int): FloatArray {
+        val safeFrame = max(32, frameSize)
+        val safeHop = max(16, hopSize)
+        if (samples.size < safeFrame) return FloatArray(0)
+        val numFrames = (samples.size - safeFrame) / safeHop + 1
+        val series = FloatArray(numFrames)
         for (i in 0 until numFrames) {
-            var sum = 0.0
-            val base = i * hopLength
-            val limit = min(frameLength, samples.size - base)
-            for (j in 0 until limit) {
-                val v = samples[base + j]
-                sum += v * v
+            val start = i * safeHop
+            var sumSq = 0.0
+            for (j in 0 until safeFrame) {
+                val v = samples[start + j]
+                sumSq += v * v
             }
-            rms[i] = sqrt(sum / frameLength).toFloat()
+            series[i] = sqrt(sumSq / safeFrame).toFloat()
         }
-        return rms
+        return series
     }
 
-    /**
-     * 计算尾部静默时间和活跃度比例（对齐 Python extract_features 尾部分析）
-     */
-    private fun estimateTailSilence(endSamples: FloatArray, sr: Int): Pair<Double, Double> {
-        if (endSamples.isEmpty()) return Pair(0.0, 1.0)
-
-        val endRms = computeFrameRms(endSamples)
-        if (endRms.isEmpty()) return Pair(0.0, 1.0)
-
-        val peakRms = endRms.maxOrNull() ?: 0f
-        val activeThreshold = max(peakRms * 0.2f, 1e-4f)
-
-        var lastActiveIdx = -1
-        for (i in endRms.indices) {
-            if (endRms[i] >= activeThreshold) {
-                lastActiveIdx = i
-            }
-        }
-
-        val endLenSec = endSamples.size.toDouble() / sr
-        val lastActiveSec = if (lastActiveIdx >= 0) {
-            lastActiveIdx * rmsHopLength.toDouble() / sr
-        } else {
-            0.0
-        }
-        val tailSilenceSec = max(0.0, endLenSec - lastActiveSec)
-        val endActivityRatio = ((endLenSec - tailSilenceSec) / max(endLenSec, 1e-6)).coerceIn(0.0, 1.0)
-
-        return Pair(tailSilenceSec, endActivityRatio)
-    }
-
-    /**
-     * 估计无效尾部时间（对齐 Python estimate_invalid_tail_sec）
-     */
-    private fun estimateInvalidTailSec(tailScanSamples: FloatArray, sr: Int): Double {
-        if (tailScanSamples.isEmpty()) return 0.0
-
-        val tailRms = computeFrameRms(tailScanSamples)
-        if (tailRms.isEmpty()) return 0.0
-
-        // 5-point moving average smooth (mode='same')
-        val smooth = FloatArray(tailRms.size)
-        val kernelSize = 5
-        val half = kernelSize / 2
-        for (i in tailRms.indices) {
-            var sum = 0.0
+    private fun smoothSeriesMovingAverage(values: FloatArray, kernelSize: Int = 5): FloatArray {
+        if (values.isEmpty()) return FloatArray(0)
+        val safeKernel = max(1, kernelSize)
+        if (safeKernel <= 1 || values.size <= 2) return values.copyOf()
+        val half = safeKernel / 2
+        val out = FloatArray(values.size)
+        for (i in values.indices) {
+            var acc = 0.0
             var count = 0
             val start = max(0, i - half)
-            val end = min(tailRms.size - 1, i + half)
+            val end = min(values.size - 1, i + half)
             for (j in start..end) {
-                sum += tailRms[j]
+                acc += values[j]
                 count++
             }
-            smooth[i] = (sum / count).toFloat()
+            out[i] = if (count > 0) (acc / count).toFloat() else values[i]
         }
+        return out
+    }
 
-        val peakRms = tailRms.maxOrNull() ?: 0f
-        if (peakRms <= 1e-7) return tailScanSamples.size.toDouble() / sr
+    private fun percentile(values: FloatArray, p: Double): Float {
+        if (values.isEmpty()) return 0f
+        val sorted = values.filter { it.isFinite() }.sorted()
+        if (sorted.isEmpty()) return 0f
+        val rank = (max(0.0, min(100.0, p)) / 100.0) * (sorted.size - 1)
+        val low = rank.toInt()
+        val high = kotlin.math.ceil(rank).toInt()
+        if (low == high) return sorted[low]
+        val t = (rank - low).toFloat()
+        return sorted[low] * (1 - t) + sorted[high] * t
+    }
 
-        // 40th percentile
-        val sortedSmooth = smooth.sorted()
-        val floorRms = sortedSmooth[smooth.size * 40 / 100]
+    private fun estimateInvalidTailSecFromRmsSeries(rmsSeries: FloatArray, sampleRate: Int, hopSize: Int): Double {
+        if (rmsSeries.isEmpty() || sampleRate <= 0 || hopSize <= 0) return 0.0
+        val smoothed = smoothSeriesMovingAverage(rmsSeries, 5)
+        val peakRms = rmsSeries.maxOrNull() ?: 0f
+        val tailLenSec = (rmsSeries.size * hopSize).toDouble() / sampleRate
+        if (peakRms <= 1e-7) return min(40.0, max(0.0, tailLenSec))
+        val floorRms = percentile(smoothed, 40.0)
         val activeThreshold = max(peakRms * 0.065f, max(floorRms * 0.62f, 4e-5f))
-
-        var lastActiveIdx = -1
-        for (i in smooth.indices) {
-            if (smooth[i] >= activeThreshold) {
-                lastActiveIdx = i
-            }
+        var lastActiveIndex = -1
+        for (i in smoothed.indices) {
+            if (smoothed[i] >= activeThreshold) lastActiveIndex = i
         }
-
-        val tailLenSec = tailScanSamples.size.toDouble() / sr
-        val invalidTail = if (lastActiveIdx >= 0) {
-            max(0.0, tailLenSec - (lastActiveIdx * rmsHopLength.toDouble() / sr))
-        } else {
+        val invalidTail = if (lastActiveIndex < 0) {
             tailLenSec
+        } else {
+            val lastActiveSec = (lastActiveIndex * hopSize).toDouble() / sampleRate
+            max(0.0, tailLenSec - lastActiveSec)
         }
-
         return if (invalidTail < 0.4) 0.0 else min(40.0, invalidTail)
     }
 
+    /**
+     * 对齐原作者 estimateBpmFromSamples
+     */
     private fun estimateBpm(samples: FloatArray, sr: Int): Double {
-        if (samples.size < sr * 5) return 0.0
-
-        return try {
-            val onsetEnv = computeOnsetEnvelopeSpectral(samples, sr)
-            estimateBpmFromOnsetEnvelope(onsetEnv, sr)
-        } catch (e: Exception) {
-            Log.w("AudioAnalyzer", "Spectral onset BPM failed, fallback to BeatRoot", e)
-            try {
-                estimateBpmWithBeatRoot(samples, sr)
-            } catch (e2: Exception) {
-                Log.w("AudioAnalyzer", "BeatRoot BPM failed, fallback to autocorrelation", e2)
-                val onsetDiff = computeOnsetEnvelope(samples, sr)
-                estimateBpmByAutocorrelation(onsetDiff, sr)
-            }
-        }
-    }
-
-    /**
-     * 计算频谱差分 onset envelope
-     * 关键优化：复用 buffer 和 logMag 数组，避免每帧都分配新内存
-     */
-    private fun computeOnsetEnvelopeSpectral(samples: FloatArray, sr: Int): FloatArray {
-        val frameSize = 2048
-        val hopSize = 512
-        val numFrames = max(0, (samples.size - frameSize) / hopSize + 1)
-        if (numFrames <= 1) return FloatArray(0)
-
-        val fft = fft2048
-        val fftBuffer = FloatArray(frameSize)
-        val magnitudes = FloatArray(frameSize / 2)
-        val onsetEnvelope = FloatArray(numFrames)
-
-        // 复用两个 logMag 缓冲区交替使用
-        var logMagA = FloatArray(magnitudes.size)
-        var logMagB = FloatArray(magnitudes.size)
-        var prevLogMag: FloatArray? = null
-
-        for (i in 0 until numFrames) {
-            val start = i * hopSize
-            // 直接填充 fftBuffer，不 copyOf（forwardTransform 会修改它，但我们每次重新填充）
-            val limit = min(frameSize, samples.size - start)
-            if (limit < frameSize) {
-                // 零填充尾部
-                fftBuffer.fill(0f)
-            }
-            for (j in 0 until limit) {
-                fftBuffer[j] = samples[start + j]
-            }
-
-            fft.forwardTransform(fftBuffer)
-            fft.modulus(fftBuffer, magnitudes)
-
-            // 计算对数幅度谱，直接写入当前缓冲区
-            val currentLogMag = if (prevLogMag == null) logMagA else logMagB
-            for (j in magnitudes.indices) {
-                currentLogMag[j] = kotlin.math.ln(1.0 + magnitudes[j].toDouble()).toFloat()
-            }
-
-            if (prevLogMag != null) {
-                var diffSum = 0.0
-                for (j in currentLogMag.indices) {
-                    val diff = currentLogMag[j] - prevLogMag[j]
-                    if (diff > 0) {
-                        diffSum += diff
-                    }
-                }
-                onsetEnvelope[i] = diffSum.toFloat()
-            } else {
-                onsetEnvelope[i] = 0f
-            }
-
-            // 交换缓冲区引用
-            if (prevLogMag == null) {
-                prevLogMag = logMagA
-                logMagB = logMagA
-                logMagA = currentLogMag
-            } else {
-                val temp = logMagA
-                logMagA = logMagB
-                logMagB = temp
-                prevLogMag = logMagA
-            }
-        }
-
-        return onsetEnvelope
-    }
-
-    /**
-     * 基于 onset envelope 自相关 + log-normal 先验的 tempo 估计
-     */
-    private fun estimateBpmFromOnsetEnvelope(onsetEnv: FloatArray, sr: Int): Double {
-        if (onsetEnv.size < 10) return 0.0
-
-        val hopSize = 512
-        val acSizeSec = 8.0
-        val winLength = ((sr * acSizeSec) / hopSize).toInt()
-        val effectiveWinLength = min(winLength, onsetEnv.size)
-
-        val minLag = max(1, (sr * 60.0 / 210.0 / hopSize).toInt())
-        val maxLag = min((sr * 60.0 / 55.0 / hopSize).toInt(), onsetEnv.size - 1)
-        if (minLag >= maxLag) return 0.0
-
-        val numLags = maxLag - minLag + 1
-        val autocorr = DoubleArray(numLags)
-
-        for (lag in minLag..maxLag) {
-            var sum = 0.0
-            val maxT = min(onsetEnv.size - lag, effectiveWinLength)
-            for (t in 0 until maxT) {
-                sum += onsetEnv[t] * onsetEnv[t + lag]
-            }
-            autocorr[lag - minLag] = sum
-        }
-
-        val maxCorr = autocorr.maxOrNull() ?: 1.0
-        if (maxCorr <= 0) return 0.0
-
-        val bpms = DoubleArray(numLags) { i ->
-            val lag = minLag + i
-            60.0 * sr / (lag * hopSize)
-        }
-
-        val startBpm = 120.0
-        val stdBpm = 1.0
-        val logPrior = DoubleArray(numLags) { i ->
-            val bpm = bpms[i]
-            val logRatio = (kotlin.math.log2(bpm) - kotlin.math.log2(startBpm)) / stdBpm
-            -0.5 * logRatio * logRatio
-        }
-
-        var bestIdx = 0
-        var bestScore = Double.NEGATIVE_INFINITY
-        for (i in autocorr.indices) {
-            val score = kotlin.math.ln(1.0 + 1e6 * autocorr[i] / maxCorr) + logPrior[i]
-            if (score > bestScore) {
-                bestScore = score
-                bestIdx = i
-            }
-        }
-
-        return bpms[bestIdx].coerceIn(55.0, 210.0)
-    }
-
-    /**
-     * 使用 TarsosDSP BeatRoot 算法检测 BPM (fallback)
-     */
-    private fun estimateBpmWithBeatRoot(samples: FloatArray, sr: Int): Double {
         val frameSize = 1024
         val hopSize = 512
+        if (samples.size < frameSize * 8 || sr <= 0) return 0.0
 
-        val format = TarsosDSPAudioFormat(sr.toFloat(), 16, 1, true, false)
-        val audioEvent = AudioEvent(format)
-
-        val broeh = BeatRootOnsetEventHandler()
-        val detector = ComplexOnsetDetector(frameSize)
-        detector.setHandler(broeh)
-
-        var samplesProcessed = 0L
-        val bytesPerSample = 2 // 16-bit mono
-
-        for (start in 0 until samples.size step hopSize) {
-            val end = min(start + frameSize, samples.size)
-            val frame = samples.copyOfRange(start, end)
-
-            val paddedFrame = if (frame.size < frameSize) {
-                FloatArray(frameSize) { i -> if (i < frame.size) frame[i] else 0f }
-            } else {
-                frame
+        val envSize = (samples.size - frameSize) / hopSize + 1
+        val env = FloatArray(envSize)
+        for (i in 0 until envSize) {
+            val start = i * hopSize
+            var sum = 0.0
+            for (j in 0 until frameSize) {
+                sum += kotlin.math.abs(samples[start + j])
             }
-
-            audioEvent.setFloatBuffer(paddedFrame)
-            audioEvent.setBytesProcessed(samplesProcessed * bytesPerSample)
-
-            detector.process(audioEvent)
-            samplesProcessed += hopSize
+            env[i] = (sum / frameSize).toFloat()
         }
+        if (envSize < 32) return 0.0
 
-        detector.processingFinished()
+        val mean = env.sum() / envSize
+        var varianceAcc = 0.0
+        for (i in 0 until envSize) {
+            env[i] = max(0f, env[i] - mean.toFloat())
+            varianceAcc += env[i] * env[i]
+        }
+        val variance = varianceAcc / max(1, envSize)
+        if (variance < 1e-6) return 0.0
 
-        val beats = mutableListOf<Double>()
-        broeh.trackBeats(object : OnsetHandler {
-            override fun handleOnset(time: Double, salience: Double) {
-                beats.add(time)
+        val envRate = sr.toDouble() / hopSize
+        val minLag = ((60 * envRate) / 180).toInt()
+        val maxLag = ((60 * envRate) / 70).toInt()
+        var bestLag = 0
+        var bestScore = Double.NEGATIVE_INFINITY
+        for (lag in max(1, minLag)..max(minLag + 1, maxLag)) {
+            var score = 0.0
+            for (i in 0 until envSize - lag) {
+                score += env[i] * env[i + lag]
             }
-        })
-
-        if (beats.size < 2) {
-            throw IllegalStateException("Not enough beats detected: ${beats.size}")
-        }
-
-        val intervals = mutableListOf<Double>()
-        for (i in 1 until beats.size) {
-            intervals.add(beats[i] - beats[i - 1])
-        }
-
-        val validIntervals = intervals.filter { it in 0.28..1.1 }
-        if (validIntervals.isEmpty()) {
-            throw IllegalStateException("No valid beat intervals")
-        }
-
-        val medianInterval = validIntervals.sorted()[validIntervals.size / 2]
-        val bpm = 60.0 / medianInterval
-
-        val candidates = listOf(bpm, bpm * 2, bpm / 2)
-        val bestBpm = candidates.filter { it in 55.0..210.0 }.minByOrNull { candidate ->
-            validIntervals.sumOf { interval ->
-                val expectedInterval = 60.0 / candidate
-                val ratio = interval / expectedInterval
-                val error = if (ratio in 0.92..1.08 || ratio in 1.92..2.08 || ratio in 0.42..0.58) {
-                    0.0
-                } else {
-                    kotlin.math.abs(ratio - 1.0)
-                }
-                error
-            }
-        } ?: bpm
-
-        return bestBpm.coerceIn(55.0, 210.0)
-    }
-
-    private fun estimateBpmByAutocorrelation(envelope: FloatArray, sr: Int): Double {
-        val minLag = (sr * 60.0 / 210.0).toInt()
-        val maxLag = (sr * 60.0 / 55.0).toInt()
-        var bestLag = minLag
-        var bestCorr = Double.NEGATIVE_INFINITY
-        for (lag in minLag..maxLag) {
-            var corr = 0.0
-            for (i in envelope.indices) {
-                if (i + lag < envelope.size) {
-                    corr += envelope[i] * envelope[i + lag]
-                }
-            }
-            if (corr > bestCorr) {
-                bestCorr = corr
+            if (score > bestScore) {
+                bestScore = score
                 bestLag = lag
             }
         }
-        val bpm = (60.0 * sr) / bestLag
-        return bpm.coerceIn(55.0, 210.0)
+        if (bestLag <= 0) return 0.0
+        val bpm = (60 * envRate) / bestLag
+        return if (bpm.isFinite()) bpm.coerceIn(55.0, 210.0) else 0.0
     }
 
-    private fun computeOnsetEnvelope(samples: FloatArray, sr: Int): FloatArray {
-        val frameSize = sr / 20  // 50ms frames
-        val numFrames = samples.size / frameSize
-        val energy = FloatArray(numFrames)
-        for (i in 0 until numFrames) {
-            var sum = 0.0
-            val base = i * frameSize
-            val limit = min(frameSize, samples.size - base)
-            for (j in 0 until limit) {
-                val v = samples[base + j]
-                sum += v * v
-            }
-            energy[i] = sqrt(sum / frameSize).toFloat()
-        }
-
-        val diff = FloatArray(energy.size)
-        diff[0] = 0f
-        for (i in 1 until energy.size) {
-            diff[i] = kotlin.math.max(0f, energy[i] - energy[i - 1])
-        }
-        return diff
-    }
-
-    private fun computeRmsEnergy(samples: FloatArray): Double {
+    /**
+     * 对齐原作者 computeEnergyFromSamples
+     */
+    private fun computeEnergyFromSamples(samples: FloatArray): Double {
         if (samples.isEmpty()) return 0.0
-        var sum = 0.0
-        for (s in samples) {
-            sum += s * s
-        }
-        return sqrt(sum / samples.size)
+        val rmsSeries = computeFrameRmsSeries(samples, 2048, 512)
+        if (rmsSeries.isEmpty()) return 0.0
+        val mean = rmsSeries.sum().toDouble() / rmsSeries.size
+        return if (mean.isFinite()) mean else 0.0
     }
 
-    private fun computeSpectralCentroid(samples: FloatArray, sr: Int): Double {
-        if (samples.isEmpty()) return 0.0
-        val fftSize = 2048
-        val fft = fft2048
-        val buffer = FloatArray(fftSize)
-
-        val startIdx = max(0, samples.size / 2 - fftSize / 2)
-        val limit = min(fftSize, samples.size - startIdx)
-        for (i in 0 until limit) {
-            buffer[i] = samples[startIdx + i]
-        }
-        if (limit < fftSize) {
-            for (i in limit until fftSize) {
-                buffer[i] = 0f
+    /**
+     * 对齐原作者 computeBrightnessFromSamples
+     */
+    private fun computeBrightnessFromSamples(samples: FloatArray, sampleRate: Int): Double {
+        if (samples.size < 512 || sampleRate <= 0) return 0.0
+        val frameSize = 2048
+        val hopSize = 1024
+        var weighted = 0.0
+        var sumWeight = 0
+        for (start in 0 until samples.size - frameSize step hopSize) {
+            var last = samples[start]
+            var diffAcc = 0.0
+            var absAcc = kotlin.math.abs(last)
+            for (i in 1 until frameSize) {
+                val cur = samples[start + i]
+                diffAcc += kotlin.math.abs(cur - last)
+                absAcc += kotlin.math.abs(cur)
+                last = cur
             }
+            val norm = if (absAcc > 1e-9) diffAcc / absAcc else 0.0
+            weighted += norm
+            sumWeight++
         }
-
-        val magnitudes = FloatArray(fftSize / 2)
-        fft.forwardTransform(buffer)
-        fft.modulus(buffer, magnitudes)
-
-        var weightedSum = 0.0
-        var magnitudeSum = 0.0
-        val binWidth = sr.toDouble() / fftSize
-
-        for (i in magnitudes.indices) {
-            val freq = i * binWidth
-            val mag = magnitudes[i]
-            weightedSum += freq * mag
-            magnitudeSum += mag
-        }
-
-        return if (magnitudeSum > 0) weightedSum / magnitudeSum else 0.0
+        val normalized = if (sumWeight > 0) weighted / sumWeight else 0.0
+        return max(0.0, min(6000.0, normalized * sampleRate * 0.14))
     }
 
     /** 简单的五元组数据类，用于并行返回多个 energy 值 */

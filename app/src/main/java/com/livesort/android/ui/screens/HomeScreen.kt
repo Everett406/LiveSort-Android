@@ -121,7 +121,7 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        if (sortedSongs.isNotEmpty()) {
+        if (!isAnalyzing && sortedSongs.isNotEmpty()) {
             // Stats
             StatsRow(sortedSongs)
 

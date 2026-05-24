@@ -108,10 +108,14 @@ class CrossfadePlayer(context: Context) {
 
         stopCrossfade()
 
-        currentPlayer.stop()
-        currentPlayer.clearMediaItems()
-        nextPlayer.stop()
-        nextPlayer.clearMediaItems()
+        // 对齐原作者：总是重置 active/next 到 audio1/audio2
+        currentPlayer = playerA
+        nextPlayer = playerB
+
+        playerA.stop()
+        playerA.clearMediaItems()
+        playerB.stop()
+        playerB.clearMediaItems()
 
         val uri = resolveUri(song.filename)
         currentPlayer.setMediaItem(MediaItem.fromUri(uri))
@@ -119,9 +123,11 @@ class CrossfadePlayer(context: Context) {
         currentPlayer.play()
         currentPlayer.volume = BASE_VOL
 
-        // 重置效果
-        setTone(currentPlayer, 0.0)
-        setReverb(currentPlayer, 0.0)
+        // 重置两个 player 的效果，对齐原作者
+        setTone(playerA, 0.0)
+        setTone(playerB, 0.0)
+        setReverb(playerA, 0.0)
+        setReverb(playerB, 0.0)
 
         _isPlaying.value = true
         _isTransitioning.value = false
@@ -218,12 +224,7 @@ class CrossfadePlayer(context: Context) {
         setReverb(outgoingPlayer, initialState.outgoingReverb)
         setReverb(incomingPlayer, initialState.incomingReverb)
 
-        val temp = currentPlayer
-        currentPlayer = incomingPlayer
-        nextPlayer = temp
-        currentIndex++
-        _currentSong.value = nextSong
-        onIndexChanged?.invoke(currentIndex)
+        // 不在此处 swap，对齐原作者（crossfade 完成后再 swap）
 
         val fadeIntervalMs = 100L
         val totalSteps = ((durationSec * 1000) / fadeIntervalMs).toInt()
@@ -245,7 +246,7 @@ class CrossfadePlayer(context: Context) {
                 setReverb(incomingPlayer, state.incomingReverb)
 
                 if (currentStep >= totalSteps) {
-                    finishCrossfade(outgoingPlayer, incomingPlayer)
+                    finishCrossfade(outgoingPlayer, incomingPlayer, nextSong)
                 } else {
                     handler.postDelayed(this, fadeIntervalMs)
                 }
@@ -254,7 +255,7 @@ class CrossfadePlayer(context: Context) {
         handler.post(fadeRunnable!!)
     }
 
-    private fun finishCrossfade(outgoingPlayer: ExoPlayer, incomingPlayer: ExoPlayer) {
+    private fun finishCrossfade(outgoingPlayer: ExoPlayer, incomingPlayer: ExoPlayer, nextSong: Song) {
         outgoingPlayer.stop()
         outgoingPlayer.clearMediaItems()
         setTrackOutputLevel(outgoingPlayer, 0.0)
@@ -263,6 +264,13 @@ class CrossfadePlayer(context: Context) {
         setTone(incomingPlayer, 0.0)
         setReverb(outgoingPlayer, 0.0)
         setReverb(incomingPlayer, 0.0)
+
+        // crossfade 完成后 swap 并更新索引，对齐原作者
+        currentPlayer = incomingPlayer
+        nextPlayer = outgoingPlayer
+        currentIndex++
+        _currentSong.value = nextSong
+        onIndexChanged?.invoke(currentIndex)
 
         _isTransitioning.value = false
         fadeRunnable = null
