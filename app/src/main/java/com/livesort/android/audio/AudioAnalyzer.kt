@@ -19,11 +19,11 @@ import kotlin.math.sqrt
  *
  * 使用 Android MediaCodec 解码 + TarsosDSP FFT 分析
  */
-actual class AudioAnalyzer actual constructor() {
+class AudioAnalyzer constructor() {
 
     private val targetSampleRate = 22050
 
-    actual suspend fun analyze(filePath: String): AudioFeatures? = withContext(Dispatchers.Default) {
+    suspend fun analyze(filePath: String): AudioFeatures? = withContext(Dispatchers.Default) {
         val file = File(filePath)
         if (!file.exists()) return@withContext null
 

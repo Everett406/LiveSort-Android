@@ -42,7 +42,7 @@ fun FileSelectScreen(
     onImportSelected: (List<Song>) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var selectedIndices by remember { mutableStateOf(Set<Int>()) }
+    var selectedIndices by remember { mutableStateOf(emptySet<Int>()) }
     val allSelected = selectedIndices.size == folder.files.size && folder.files.isNotEmpty()
 
     Column(
