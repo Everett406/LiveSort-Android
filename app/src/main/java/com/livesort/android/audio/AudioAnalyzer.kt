@@ -566,7 +566,8 @@ class AudioAnalyzer(private val context: Context) {
         val stdBpm = 1.0
         val logPrior = DoubleArray(numLags) { i ->
             val bpm = bpms[i]
-            -0.5 * ((kotlin.math.log2(bpm) - kotlin.math.log2(startBpm)) / stdBpm).pow(2.0)
+            val logRatio = (kotlin.math.log2(bpm) - kotlin.math.log2(startBpm)) / stdBpm
+            -0.5 * logRatio * logRatio
         }
 
         // 加权找峰值 (对齐 librosa: np.argmax(np.log1p(1e6 * tg) + logprior))
