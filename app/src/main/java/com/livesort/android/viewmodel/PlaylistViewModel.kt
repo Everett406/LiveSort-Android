@@ -166,6 +166,11 @@ class PlaylistViewModel(
         _sortedSongs.value = result.sortedPlaylist
         _actualCurve.value = result.actualCurve
         _idealCurve.value = result.idealCurve
+
+        // Auto-select first song so PlayerBar shows up
+        if (result.sortedPlaylist.isNotEmpty() && _currentPlayingIndex.value < 0) {
+            _currentPlayingIndex.value = 0
+        }
     }
 
     /**

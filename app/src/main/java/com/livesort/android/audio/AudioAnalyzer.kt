@@ -308,13 +308,69 @@ class AudioAnalyzer(private val context: Context) {
     private fun estimateBpm(samples: FloatArray, sr: Int): Double {
         if (samples.size < sr * 5) return 0.0
 
-        val envelope = computeEnvelope(samples, sr)
+        val onsetDiff = computeOnsetEnvelope(samples, sr)
+        if (onsetDiff.size < 3) return 0.0
+
+        // Smooth the onset envelope
+        val smooth = smoothFloatArray(onsetDiff, 5)
+
+        // Find peaks (onsets)
+        val onsets = mutableListOf<Int>()
+        val threshold = smooth.maxOrNull()?.times(0.15f) ?: 0f
+        for (i in 1 until smooth.size - 1) {
+            if (smooth[i] > smooth[i - 1] && smooth[i] > smooth[i + 1] && smooth[i] > threshold) {
+                onsets.add(i)
+            }
+        }
+
+        if (onsets.size < 2) {
+            // Fallback to autocorrelation if no clear onsets
+            return estimateBpmByAutocorrelation(onsetDiff, sr)
+        }
+
+        // Compute intervals between consecutive onsets
+        val frameDurationSec = 1.0 / 20.0  // 50ms per frame
+        val intervals = mutableListOf<Double>()
+        for (i in 1 until onsets.size) {
+            val intervalSec = (onsets[i] - onsets[i - 1]) * frameDurationSec
+            if (intervalSec in 0.28..1.1) {  // ~55 BPM to ~215 BPM
+                intervals.add(intervalSec)
+            }
+        }
+
+        if (intervals.size < 2) {
+            return estimateBpmByAutocorrelation(onsetDiff, sr)
+        }
+
+        // Build histogram of quantized intervals
+        val histogram = mutableMapOf<Double, Int>()
+        for (interval in intervals) {
+            val key = (interval * 20).toInt() / 20.0  // quantize to 0.05s
+            histogram[key] = (histogram[key] ?: 0) + 1
+        }
+
+        val bestInterval = histogram.maxByOrNull { it.value }?.key
+            ?: intervals.average()
+
+        // Also consider half and double tempo
+        val candidates = listOf(bestInterval, bestInterval * 2, bestInterval / 2)
+        val bestCandidate = candidates.filter { it in 0.28..1.1 }.minByOrNull { interval ->
+            val count = intervals.count {
+                val ratio = it / interval
+                ratio in 0.92..1.08 || ratio in 1.92..2.08 || ratio in 0.42..0.58
+            }
+            -count
+        } ?: bestInterval
+
+        val bpm = 60.0 / bestCandidate
+        return bpm.coerceIn(55.0, 210.0)
+    }
+
+    private fun estimateBpmByAutocorrelation(envelope: FloatArray, sr: Int): Double {
         val minLag = (sr * 60.0 / 210.0).toInt()
         val maxLag = (sr * 60.0 / 55.0).toInt()
-
         var bestLag = minLag
         var bestCorr = Double.NEGATIVE_INFINITY
-
         for (lag in minLag..maxLag) {
             var corr = 0.0
             for (i in envelope.indices) {
@@ -327,15 +383,14 @@ class AudioAnalyzer(private val context: Context) {
                 bestLag = lag
             }
         }
-
         val bpm = (60.0 * sr) / bestLag
         return bpm.coerceIn(55.0, 210.0)
     }
 
-    private fun computeEnvelope(samples: FloatArray, sr: Int): FloatArray {
-        val frameSize = sr / 20
+    private fun computeOnsetEnvelope(samples: FloatArray, sr: Int): FloatArray {
+        val frameSize = sr / 20  // 50ms frames
         val numFrames = samples.size / frameSize
-        val envelope = FloatArray(numFrames)
+        val energy = FloatArray(numFrames)
         for (i in 0 until numFrames) {
             var sum = 0.0
             for (j in 0 until frameSize) {
@@ -344,15 +399,34 @@ class AudioAnalyzer(private val context: Context) {
                     sum += samples[idx] * samples[idx]
                 }
             }
-            envelope[i] = sqrt(sum / frameSize).toFloat()
+            energy[i] = sqrt(sum / frameSize).toFloat()
         }
 
-        val diff = FloatArray(envelope.size)
+        val diff = FloatArray(energy.size)
         diff[0] = 0f
-        for (i in 1 until envelope.size) {
-            diff[i] = kotlin.math.max(0f, envelope[i] - envelope[i - 1])
+        for (i in 1 until energy.size) {
+            diff[i] = kotlin.math.max(0f, energy[i] - energy[i - 1])
         }
         return diff
+    }
+
+    private fun smoothFloatArray(data: FloatArray, windowSize: Int): FloatArray {
+        if (data.isEmpty()) return FloatArray(0)
+        val half = windowSize / 2
+        val result = FloatArray(data.size)
+        for (i in data.indices) {
+            var sum = 0.0
+            var count = 0
+            for (j in -half..half) {
+                val idx = i + j
+                if (idx in data.indices) {
+                    sum += data[idx]
+                    count++
+                }
+            }
+            result[i] = (sum / count).toFloat()
+        }
+        return result
     }
 
     private fun computeRmsEnergy(samples: FloatArray): Double {
