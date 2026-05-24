@@ -131,7 +131,7 @@ class AudioAnalyzer(private val context: Context) {
         val extractor = MediaExtractor()
         try {
             if (uri.scheme == "content") {
-                extractor.setDataSource(context, uri)
+                extractor.setDataSource(context, uri, null)
             } else {
                 extractor.setDataSource(filePath)
             }
