@@ -54,7 +54,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 fun HomeScreen(
-    viewModel: PlaylistViewModel = remember { PlaylistViewModel(AudioAnalyzer()) },
+    viewModel: PlaylistViewModel,
     onImportClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {

@@ -54,7 +54,7 @@ fun LiveSortApp() {
     val scope = rememberCoroutineScope()
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
 
-    val viewModel = remember { PlaylistViewModel(AudioAnalyzer()) }
+    val viewModel = remember { PlaylistViewModel(AudioAnalyzer(context.applicationContext)) }
     var player by remember { mutableStateOf<CrossfadePlayer?>(null) }
 
     val sortedSongs by viewModel.sortedSongs.collectAsState()

@@ -1,15 +1,16 @@
 package com.livesort.android.audio
 
+import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
+import android.net.Uri
 import be.tarsos.dsp.util.fft.FFT
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -19,17 +20,23 @@ import kotlin.math.sqrt
  *
  * 使用 Android MediaCodec 解码 + TarsosDSP FFT 分析
  */
-class AudioAnalyzer constructor() {
+class AudioAnalyzer(private val context: Context) {
 
     private val targetSampleRate = 22050
 
     suspend fun analyze(filePath: String): AudioFeatures? = withContext(Dispatchers.Default) {
-        val file = File(filePath)
-        if (!file.exists()) return@withContext null
+        val uri = Uri.parse(filePath)
+        val isContentUri = uri.scheme == "content"
+
+        // If it's a plain file path, verify existence
+        if (!isContentUri) {
+            val file = File(filePath)
+            if (!file.exists()) return@withContext null
+        }
 
         try {
-            val durationSec = getDuration(filePath)
-            val (origSampleRate, fullSamples) = decodeAudio(filePath, durationSec)
+            val durationSec = getDuration(uri, filePath)
+            val (origSampleRate, fullSamples) = decodeAudio(uri, filePath, durationSec)
             if (fullSamples.isEmpty()) return@withContext null
 
             val samples = if (origSampleRate != targetSampleRate) {
@@ -103,10 +110,14 @@ class AudioAnalyzer constructor() {
 
     // --- Audio Decoding (MediaExtractor + MediaCodec) ---
 
-    private fun getDuration(filePath: String): Double {
+    private fun getDuration(uri: Uri, filePath: String): Double {
         val retriever = MediaMetadataRetriever()
         return try {
-            retriever.setDataSource(filePath)
+            if (uri.scheme == "content") {
+                retriever.setDataSource(context, uri)
+            } else {
+                retriever.setDataSource(filePath)
+            }
             val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
             (durationStr?.toLong() ?: 0L) / 1000.0
         } catch (e: Exception) {
@@ -116,10 +127,14 @@ class AudioAnalyzer constructor() {
         }
     }
 
-    private fun decodeAudio(filePath: String, maxDurationSec: Double): Pair<Int, FloatArray> {
+    private fun decodeAudio(uri: Uri, filePath: String, maxDurationSec: Double): Pair<Int, FloatArray> {
         val extractor = MediaExtractor()
         try {
-            extractor.setDataSource(filePath)
+            if (uri.scheme == "content") {
+                extractor.setDataSource(context, uri)
+            } else {
+                extractor.setDataSource(filePath)
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             return Pair(0, FloatArray(0))
@@ -146,14 +161,29 @@ class AudioAnalyzer constructor() {
         val originalSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE, 44100)
         val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT, 2)
 
-        val codec = MediaCodec.createDecoderByType(mime)
-        codec.configure(format, null, null, 0)
-        codec.start()
+        val codec = try {
+            MediaCodec.createDecoderByType(mime)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            extractor.release()
+            return Pair(0, FloatArray(0))
+        }
+
+        try {
+            codec.configure(format, null, null, 0)
+            codec.start()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            codec.release()
+            extractor.release()
+            return Pair(0, FloatArray(0))
+        }
 
         val bufferInfo = MediaCodec.BufferInfo()
         val samples = mutableListOf<Float>()
         var isEOS = false
-        val maxSamples = (originalSampleRate * maxDurationSec).toLong()
+        // Cap at 5 minutes of audio to prevent memory issues
+        val maxSamples = min((originalSampleRate * maxDurationSec).toLong(), originalSampleRate * 300L)
 
         try {
             while (!isEOS && samples.size < maxSamples) {
@@ -188,9 +218,9 @@ class AudioAnalyzer constructor() {
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            codec.stop()
-            codec.release()
-            extractor.release()
+            try { codec.stop() } catch (_: Exception) {}
+            try { codec.release() } catch (_: Exception) {}
+            try { extractor.release() } catch (_: Exception) {}
         }
 
         return Pair(originalSampleRate, samples.toFloatArray())
