@@ -448,18 +448,143 @@ class AudioAnalyzer(private val context: Context) {
         if (samples.size < sr * 5) return 0.0
 
         return try {
-            estimateBpmWithBeatRoot(samples, sr)
+            // 主算法：频谱差分 onset envelope + 自相关 + log-normal 先验
+            // 对齐 librosa.feature.tempo 的核心逻辑
+            val onsetEnv = computeOnsetEnvelopeSpectral(samples, sr)
+            estimateBpmFromOnsetEnvelope(onsetEnv, sr)
         } catch (e: Exception) {
-            Log.w("AudioAnalyzer", "BeatRoot BPM failed, fallback to autocorrelation", e)
-            val onsetDiff = computeOnsetEnvelope(samples, sr)
-            estimateBpmByAutocorrelation(onsetDiff, sr)
+            Log.w("AudioAnalyzer", "Spectral onset BPM failed, fallback to BeatRoot", e)
+            try {
+                estimateBpmWithBeatRoot(samples, sr)
+            } catch (e2: Exception) {
+                Log.w("AudioAnalyzer", "BeatRoot BPM failed, fallback to autocorrelation", e2)
+                val onsetDiff = computeOnsetEnvelope(samples, sr)
+                estimateBpmByAutocorrelation(onsetDiff, sr)
+            }
         }
     }
 
     /**
-     * 使用 TarsosDSP BeatRoot 算法检测 BPM
-     * BeatRoot 基于 Simon Dixon 的论文，使用 onset + 动态规划估计 tempo
-     * 比简单的 onset 峰值检测更鲁棒，能有效避免半速/倍速误判
+     * 计算频谱差分 onset envelope
+     * 对齐 librosa.onset.onset_strength 的简化实现：
+     * 1. STFT 分帧 (frame=2048, hop=512)
+     * 2. 计算每帧对数幅度谱
+     * 3. 相邻帧差分，保留正值并求和
+     */
+    private fun computeOnsetEnvelopeSpectral(samples: FloatArray, sr: Int): FloatArray {
+        val frameSize = 2048
+        val hopSize = 512
+        val numFrames = max(0, (samples.size - frameSize) / hopSize + 1)
+        if (numFrames <= 1) return FloatArray(0)
+
+        val fft = FFT(frameSize)
+        val buffer = FloatArray(frameSize)
+        val magnitudes = FloatArray(frameSize / 2)
+        val onsetEnvelope = FloatArray(numFrames)
+
+        var prevLogMag: FloatArray? = null
+
+        for (i in 0 until numFrames) {
+            val start = i * hopSize
+            for (j in 0 until frameSize) {
+                buffer[j] = if (start + j < samples.size) samples[start + j] else 0f
+            }
+
+            // 复制 buffer 因为 forwardTransform 会修改它
+            val frameBuffer = buffer.copyOf()
+            fft.forwardTransform(frameBuffer)
+            fft.modulus(frameBuffer, magnitudes)
+
+            // 对数压缩幅度谱
+            val logMag = FloatArray(magnitudes.size) { j ->
+                kotlin.math.log1p(magnitudes[j].toDouble()).toFloat()
+            }
+
+            if (prevLogMag != null) {
+                var diffSum = 0.0
+                for (j in logMag.indices) {
+                    val diff = logMag[j] - prevLogMag[j]
+                    if (diff > 0) {
+                        diffSum += diff
+                    }
+                }
+                onsetEnvelope[i] = diffSum.toFloat()
+            } else {
+                onsetEnvelope[i] = 0f
+            }
+
+            prevLogMag = logMag
+        }
+
+        return onsetEnvelope
+    }
+
+    /**
+     * 基于 onset envelope 自相关 + log-normal 先验的 tempo 估计
+     * 对齐 librosa.feature.tempo 核心逻辑：
+     * 1. 8秒窗口自相关 (ac_size=8.0)
+     * 2. 转换为 BPM 轴
+     * 3. log-normal 先验加权 (start_bpm=120, std_bpm=1.0)
+     * 4. 取 argmax
+     */
+    private fun estimateBpmFromOnsetEnvelope(onsetEnv: FloatArray, sr: Int): Double {
+        if (onsetEnv.size < 10) return 0.0
+
+        val hopSize = 512
+        val acSizeSec = 8.0
+        val winLength = ((sr * acSizeSec) / hopSize).toInt()
+        val effectiveWinLength = min(winLength, onsetEnv.size)
+
+        // lag 范围对应 55~210 BPM
+        val minLag = max(1, (sr * 60.0 / 210.0 / hopSize).toInt())
+        val maxLag = min((sr * 60.0 / 55.0 / hopSize).toInt(), onsetEnv.size - 1)
+        if (minLag >= maxLag) return 0.0
+
+        val numLags = maxLag - minLag + 1
+        val autocorr = DoubleArray(numLags)
+
+        for (lag in minLag..maxLag) {
+            var sum = 0.0
+            val maxT = min(onsetEnv.size - lag, effectiveWinLength)
+            for (t in 0 until maxT) {
+                sum += onsetEnv[t] * onsetEnv[t + lag]
+            }
+            autocorr[lag - minLag] = sum
+        }
+
+        val maxCorr = autocorr.maxOrNull() ?: 1.0
+        if (maxCorr <= 0) return 0.0
+
+        // 转换为 BPM 轴
+        val bpms = DoubleArray(numLags) { i ->
+            val lag = minLag + i
+            60.0 * sr / (lag * hopSize)
+        }
+
+        // log-normal 先验，中心 120 BPM
+        val startBpm = 120.0
+        val stdBpm = 1.0
+        val logPrior = DoubleArray(numLags) { i ->
+            val bpm = bpms[i]
+            -0.5 * kotlin.math.pow((kotlin.math.log2(bpm) - kotlin.math.log2(startBpm)) / stdBpm, 2.0)
+        }
+
+        // 加权找峰值 (对齐 librosa: np.argmax(np.log1p(1e6 * tg) + logprior))
+        var bestIdx = 0
+        var bestScore = Double.NEGATIVE_INFINITY
+        for (i in autocorr.indices) {
+            val score = kotlin.math.log1p(1e6 * autocorr[i] / maxCorr) + logPrior[i]
+            if (score > bestScore) {
+                bestScore = score
+                bestIdx = i
+            }
+        }
+
+        return bpms[bestIdx].coerceIn(55.0, 210.0)
+    }
+
+    /**
+     * 使用 TarsosDSP BeatRoot 算法检测 BPM (fallback)
      */
     private fun estimateBpmWithBeatRoot(samples: FloatArray, sr: Int): Double {
         val frameSize = 1024
@@ -479,7 +604,6 @@ class AudioAnalyzer(private val context: Context) {
             val end = min(start + frameSize, samples.size)
             val frame = samples.copyOfRange(start, end)
 
-            // 补零到 frameSize
             val paddedFrame = if (frame.size < frameSize) {
                 FloatArray(frameSize) { i -> if (i < frame.size) frame[i] else 0f }
             } else {
@@ -506,13 +630,11 @@ class AudioAnalyzer(private val context: Context) {
             throw IllegalStateException("Not enough beats detected: ${beats.size}")
         }
 
-        // 计算 beat 间隔
         val intervals = mutableListOf<Double>()
         for (i in 1 until beats.size) {
             intervals.add(beats[i] - beats[i - 1])
         }
 
-        // 过滤异常值，只保留合理 BPM 范围对应的间隔 (55~215 BPM)
         val validIntervals = intervals.filter { it in 0.28..1.1 }
         if (validIntervals.isEmpty()) {
             throw IllegalStateException("No valid beat intervals")
@@ -521,13 +643,11 @@ class AudioAnalyzer(private val context: Context) {
         val medianInterval = validIntervals.sorted()[validIntervals.size / 2]
         val bpm = 60.0 / medianInterval
 
-        // 考虑半速/倍速，选择最合理的 tempo
         val candidates = listOf(bpm, bpm * 2, bpm / 2)
         val bestBpm = candidates.filter { it in 55.0..210.0 }.minByOrNull { candidate ->
             validIntervals.sumOf { interval ->
                 val expectedInterval = 60.0 / candidate
                 val ratio = interval / expectedInterval
-                // 允许 1x, 2x, 0.5x 的匹配
                 val error = if (ratio in 0.92..1.08 || ratio in 1.92..2.08 || ratio in 0.42..0.58) {
                     0.0
                 } else {
