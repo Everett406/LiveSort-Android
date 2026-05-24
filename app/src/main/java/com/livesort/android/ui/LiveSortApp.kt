@@ -26,6 +26,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import com.livesort.android.player.CrossfadePlayer
 import com.livesort.android.scanner.AudioFolder
 import com.livesort.android.scanner.AudioScanner
@@ -67,6 +69,9 @@ fun LiveSortApp() {
         if (sortedSongs.isNotEmpty() && currentPlayingIndex >= 0) {
             if (player == null) {
                 player = CrossfadePlayer(context)
+                player?.onIndexChanged = { index ->
+                    viewModel.setPlayingIndex(index)
+                }
             }
             player?.setPlaylist(sortedSongs, currentPlayingIndex)
         }
@@ -84,11 +89,27 @@ fun LiveSortApp() {
             when (currentScreen) {
                 is Screen.Home -> {
                     TopAppBar(
-                        title = { Text("LiveSort") },
+                        title = {
+                            Text(
+                                text = "LiveSort",
+                                style = MaterialTheme.typography.headlineMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = (-0.5).sp
+                                ),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        },
                         colors = TopAppBarDefaults.topAppBarColors(
                             containerColor = MaterialTheme.colorScheme.background
                         ),
                         actions = {
+                            IconButton(onClick = onImportClick) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "导入",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                             IconButton(onClick = { currentScreen = Screen.Algorithm }) {
                                 Icon(
                                     imageVector = Icons.Default.Info,
@@ -121,8 +142,15 @@ fun LiveSortApp() {
             }
         },
         bottomBar = {
-            if (currentScreen == Screen.Home) {
-                PlayerBar(player = player)
+            if (currentScreen == Screen.Home || currentScreen == Screen.PlaylistDetail) {
+                PlayerBar(
+                    player = player,
+                    playlist = sortedSongs,
+                    currentIndex = currentPlayingIndex,
+                    onSongClick = { index ->
+                        viewModel.setPlayingIndex(index)
+                    }
+                )
             }
         }
     ) { innerPadding ->

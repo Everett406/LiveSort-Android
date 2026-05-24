@@ -4,8 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -16,8 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -45,23 +41,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.platform.LocalContext
-import com.livesort.android.scanner.AudioScanner
-import com.livesort.android.ui.components.EmotionChart
-import com.livesort.android.audio.AudioAnalyzer
+import coil.compose.AsyncImage
 import com.livesort.android.model.Song
+import com.livesort.android.scanner.AudioScanner
 import com.livesort.android.sorting.InterestCurve
-import com.livesort.android.util.CrashReporter
+import com.livesort.android.ui.components.EmotionChart
 import com.livesort.android.viewmodel.PlaylistViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import com.livesort.android.util.CrashReporter
 
 @Composable
 fun HomeScreen(
@@ -75,7 +69,6 @@ fun HomeScreen(
     val isAnalyzing by viewModel.isAnalyzing.collectAsState()
     val idealCurve by viewModel.idealCurve.collectAsState()
     val actualCurve by viewModel.actualCurve.collectAsState()
-    val currentPlayingIndex by viewModel.currentPlayingIndex.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -99,7 +92,7 @@ fun HomeScreen(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.CenterHorizontally)
         )
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         if (hasCrash) {
             CrashLogCard(
@@ -108,9 +101,7 @@ fun HomeScreen(
                     val log = CrashReporter.getCrashLog(context) + "\n\n--- Logcat ---\n" + CrashReporter.getLogcat(context)
                     CrashReporter.copyToClipboard(context, log)
                 },
-                onClear = {
-                    CrashReporter.clearCrashLog(context)
-                }
+                onClear = { CrashReporter.clearCrashLog(context) }
             )
             Spacer(modifier = Modifier.height(12.dp))
         }
@@ -124,48 +115,6 @@ fun HomeScreen(
             )
         }
 
-        // Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    text = "LiveSort",
-                    style = MaterialTheme.typography.headlineLarge.copy(
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = (-0.5).sp
-                    ),
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "歌曲无感过渡与自动排序",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Button(
-                onClick = onImportClick,
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary
-                ),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("导入")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
         if (isAnalyzing) {
             AnalyzingIndicator(songs.count { it.isLoading }, songs.size)
             Spacer(modifier = Modifier.height(16.dp))
@@ -177,47 +126,58 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Emotion Chart (clickable to enlarge)
+            // Emotion Chart
             EmotionChart(
                 idealCurve = idealCurve,
                 actualCurve = actualCurve,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(180.dp)
+                    .height(200.dp)
                     .clip(RoundedCornerShape(20.dp))
                     .clickable { onChartClick() }
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Section label
-            Text(
-                text = "排序结果",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-
             Spacer(modifier = Modifier.height(8.dp))
 
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(bottom = 120.dp)
-            ) {
-                itemsIndexed(sortedSongs) { index, song ->
-                    SongCard(
-                        index = index,
-                        song = song,
-                        sectionName = InterestCurve.getSectionName(
-                            index.toDouble() / sortedSongs.size.coerceAtLeast(1),
-                            true
-                        ),
-                        isPlaying = index == currentPlayingIndex,
-                        onClick = { viewModel.setPlayingIndex(index) },
-                        onDelete = { viewModel.removeSong(song.id) }
-                    )
-                }
+            Text(
+                text = "点击波形图查看排序详情",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 只显示前 3 首作为预览
+            val previewSongs = sortedSongs.take(3)
+            previewSongs.forEachIndexed { index, song ->
+                SongCard(
+                    index = index,
+                    song = song,
+                    sectionName = InterestCurve.getSectionName(
+                        index.toDouble() / sortedSongs.size.coerceAtLeast(1),
+                        true
+                    ),
+                    isPlaying = false,
+                    onClick = {},
+                    onDelete = { viewModel.removeSong(song.id) }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
             }
+
+            if (sortedSongs.size > 3) {
+                Text(
+                    text = "+ ${sortedSongs.size - 3} 首歌曲",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onChartClick() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+
         } else if (songs.isNotEmpty() && !isAnalyzing) {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -336,7 +296,8 @@ private fun SongCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp)),
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
             containerColor = if (isPlaying)
                 MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
@@ -348,26 +309,38 @@ private fun SongCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Index badge
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(
-                        if (isPlaying) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "${index + 1}",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isPlaying) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+            // Cover image or index badge
+            if (song.coverPath != null) {
+                AsyncImage(
+                    model = song.coverPath,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
                 )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (isPlaying) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "${index + 1}",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (isPlaying) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(12.dp))
@@ -467,7 +440,6 @@ private fun EmptyState(onImportClick: () -> Unit) {
     }
 }
 
-
 @Composable
 private fun CrashLogCard(
     onView: () -> Unit,
@@ -533,7 +505,7 @@ private fun CrashLogDialog(
     onDismiss: () -> Unit,
     onCopy: () -> Unit
 ) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -548,7 +520,7 @@ private fun CrashLogDialog(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                val scrollState = rememberScrollState()
+                val scrollState = androidx.compose.foundation.rememberScrollState()
                 androidx.compose.foundation.text.selection.SelectionContainer {
                     Text(
                         text = log,

@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.media.MediaMetadataRetriever
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
 import com.livesort.android.model.Song
@@ -39,6 +40,7 @@ object AudioScanner {
                 MediaStore.Audio.Media.SIZE,
                 MediaStore.Audio.Media.BUCKET_DISPLAY_NAME,
                 MediaStore.Audio.Media.RELATIVE_PATH,
+                MediaStore.Audio.Media.ALBUM_ID,
                 MediaStore.Audio.Media.DATA
             )
         } else {
@@ -50,6 +52,7 @@ object AudioScanner {
                 MediaStore.Audio.Media.ALBUM,
                 MediaStore.Audio.Media.DURATION,
                 MediaStore.Audio.Media.SIZE,
+                MediaStore.Audio.Media.ALBUM_ID,
                 MediaStore.Audio.Media.DATA
             )
         }
@@ -59,7 +62,7 @@ object AudioScanner {
 
         context.contentResolver.query(uri, projection, selection, null, sortOrder)?.use { cursor ->
             while (cursor.moveToNext()) {
-                val file = cursor.toAudioFile()
+                val file = cursor.toAudioFile(context)
                 val folderName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     val idx = cursor.getColumnIndex(MediaStore.Audio.Media.BUCKET_DISPLAY_NAME)
                     if (idx >= 0) cursor.getString(idx) ?: "Unknown" else "Unknown"
@@ -95,6 +98,7 @@ object AudioScanner {
         if (!doc.isDirectory) {
             val ext = doc.name?.substringAfterLast('.', "")?.lowercase() ?: return
             if (ext in AUDIO_EXTENSIONS) {
+                val coverPath = extractCoverFromUri(context, doc.uri)
                 out.add(
                     AudioFile(
                         uri = doc.uri,
@@ -103,7 +107,8 @@ object AudioScanner {
                         artist = "",
                         album = "",
                         duration = 0,
-                        size = doc.length()
+                        size = doc.length(),
+                        coverPath = coverPath
                     )
                 )
             }
@@ -125,7 +130,8 @@ object AudioScanner {
             artist = this.artist,
             album = this.album,
             durationSec = (this.duration / 1000.0),
-            fileSizeBytes = this.size
+            fileSizeBytes = this.size,
+            coverPath = this.coverPath
         )
     }
 
@@ -179,9 +185,33 @@ object AudioScanner {
         return name
     }
 
-    private fun Cursor.toAudioFile(): AudioFile {
+    /**
+     * 从音频文件中提取内嵌封面并保存到缓存目录
+     */
+    fun extractCoverFromUri(context: Context, uri: Uri): String? {
+        return try {
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(context, uri)
+            val art = retriever.embeddedPicture
+            retriever.release()
+            if (art != null) {
+                val coverFile = java.io.File(context.cacheDir, "covers/${uri.hashCode()}.jpg")
+                coverFile.parentFile?.mkdirs()
+                coverFile.writeBytes(art)
+                coverFile.absolutePath
+            } else null
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun Cursor.toAudioFile(context: Context): AudioFile {
         val id = getLong(getColumnIndexOrThrow(MediaStore.Audio.Media._ID))
         val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI.buildUpon().appendPath(id.toString()).build()
+        val albumId = getLong(MediaStore.Audio.Media.ALBUM_ID)
+        val coverUri = if (albumId != 0L) "content://media/external/audio/albumart/$albumId" else null
+        val coverPath = coverUri ?: extractCoverFromUri(context, uri)
         return AudioFile(
             uri = uri,
             displayName = getString(MediaStore.Audio.Media.DISPLAY_NAME) ?: "",
@@ -190,7 +220,8 @@ object AudioScanner {
             artist = getString(MediaStore.Audio.Media.ARTIST) ?: "",
             album = getString(MediaStore.Audio.Media.ALBUM) ?: "",
             duration = getLong(MediaStore.Audio.Media.DURATION),
-            size = getLong(MediaStore.Audio.Media.SIZE)
+            size = getLong(MediaStore.Audio.Media.SIZE),
+            coverPath = coverPath
         )
     }
 
@@ -218,5 +249,6 @@ data class AudioFile(
     val artist: String,
     val album: String,
     val duration: Long,
-    val size: Long
+    val size: Long,
+    val coverPath: String? = null
 )

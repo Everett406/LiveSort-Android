@@ -43,6 +43,8 @@ class CrossfadePlayer(context: Context) {
     private var playlist: List<Song> = emptyList()
     private var currentIndex: Int = -1
 
+    var onIndexChanged: ((Int) -> Unit)? = null
+
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
@@ -100,6 +102,7 @@ class CrossfadePlayer(context: Context) {
     fun playAt(index: Int) {
         if (index !in playlist.indices) return
         currentIndex = index
+        onIndexChanged?.invoke(index)
         val song = playlist[index]
         _currentSong.value = song
 
@@ -220,6 +223,7 @@ class CrossfadePlayer(context: Context) {
         nextPlayer = temp
         currentIndex++
         _currentSong.value = nextSong
+        onIndexChanged?.invoke(currentIndex)
 
         val fadeIntervalMs = 100L
         val totalSteps = ((durationSec * 1000) / fadeIntervalMs).toInt()
