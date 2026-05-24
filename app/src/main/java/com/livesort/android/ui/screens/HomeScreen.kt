@@ -3,6 +3,8 @@ package com.livesort.android.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -543,7 +545,7 @@ private fun CrashLogDialog(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                val scrollState = androidx.compose.foundation.rememberScrollState()
+                val scrollState = rememberScrollState()
                 androidx.compose.foundation.text.selection.SelectionContainer {
                     Text(
                         text = log,
