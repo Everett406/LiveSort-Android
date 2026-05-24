@@ -497,7 +497,7 @@ class AudioAnalyzer(private val context: Context) {
 
             // 对数压缩幅度谱
             val logMag = FloatArray(magnitudes.size) { j ->
-                kotlin.math.log1p(magnitudes[j].toDouble()).toFloat()
+                kotlin.math.ln(1.0 + magnitudes[j].toDouble()).toFloat()
             }
 
             if (prevLogMag != null) {
@@ -566,14 +566,14 @@ class AudioAnalyzer(private val context: Context) {
         val stdBpm = 1.0
         val logPrior = DoubleArray(numLags) { i ->
             val bpm = bpms[i]
-            -0.5 * kotlin.math.pow((kotlin.math.log2(bpm) - kotlin.math.log2(startBpm)) / stdBpm, 2.0)
+            -0.5 * ((kotlin.math.log2(bpm) - kotlin.math.log2(startBpm)) / stdBpm).pow(2.0)
         }
 
         // 加权找峰值 (对齐 librosa: np.argmax(np.log1p(1e6 * tg) + logprior))
         var bestIdx = 0
         var bestScore = Double.NEGATIVE_INFINITY
         for (i in autocorr.indices) {
-            val score = kotlin.math.log1p(1e6 * autocorr[i] / maxCorr) + logPrior[i]
+            val score = kotlin.math.ln(1.0 + 1e6 * autocorr[i] / maxCorr) + logPrior[i]
             if (score > bestScore) {
                 bestScore = score
                 bestIdx = i
