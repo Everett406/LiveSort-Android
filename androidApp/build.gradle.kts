@@ -72,7 +72,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended:1.6.0")
 
     // Compose BOM
-    val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
+    val composeBom = platform("androidx.compose:compose-bom:2024.08.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
 

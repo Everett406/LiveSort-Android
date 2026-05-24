@@ -31,8 +31,8 @@ kotlin {
 
         val androidMain by getting {
             dependencies {
-                implementation("androidx.appcompat:appcompat:1.6.1")
-                implementation("androidx.core:core-ktx:1.12.0")
+                implementation("androidx.appcompat:appcompat:1.7.0")
+                implementation("androidx.core:core-ktx:1.13.1")
                 // TarsosDSP core for FFT algorithms (platform-agnostic)
                 implementation("be.tarsos.dsp:core:2.5")
             }

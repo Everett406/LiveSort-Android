@@ -6,11 +6,13 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
@@ -19,19 +21,21 @@ import com.livesort.android.ui.theme.LiveSortTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.entries.all { it.value }
-        if (allGranted) {
-            // Permissions granted, proceed with loading audio files
-        }
-    }
+    private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        requestAudioPermissions()
+        // Register activity result callback inside onCreate (after super.onCreate)
+        // to avoid SavedState timing issues on newer Android versions
+        permissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+            val allGranted = permissions.entries.all { it.value }
+            if (allGranted) {
+                // Permissions granted
+            }
+        }
 
         setContent {
             LiveSortTheme {
@@ -41,6 +45,11 @@ class MainActivity : ComponentActivity() {
                 ) {
                     LiveSortApp()
                 }
+            }
+
+            // Request permissions after UI is composed, avoiding startup-window-token issues
+            LaunchedEffect(Unit) {
+                requestAudioPermissions()
             }
         }
     }
